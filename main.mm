@@ -6,6 +6,7 @@
 #include <map>
 #include <string>
 #include <functional>
+#include <mach/mach.h>
 
 // Структура для хранения состояния функций
 struct FunctionState {
@@ -159,14 +160,13 @@ struct FunctionState {
         [self createUI];
     });
     
-    // Запускаем поток уведомлений с block self
+    // Запускаем поток уведомлений с обычным указателем
     _notificationRunning = true;
     
-    __block GameHelperController *blockSelf = self;
-    _notificationThread = std::thread([blockSelf]() {
-        // Проверяем, что объект еще жив
-        if (blockSelf) {
-            [blockSelf notificationLoop];
+    GameHelperController *selfPointer = self;
+    _notificationThread = std::thread([selfPointer]() {
+        if (selfPointer) {
+            [selfPointer notificationLoop];
         }
     });
 }
@@ -587,13 +587,12 @@ struct FunctionState {
 // MARK: - Function Implementations
 - (void)toggleAutoClicker {
     if (_functions["autoClicker"].enabled) {
-        __block GameHelperController *blockSelf = self;
+        GameHelperController *selfPointer = self;
         
-        std::thread([blockSelf]() {
-            while (blockSelf && blockSelf->_functions["autoClicker"].enabled) {
+        std::thread([selfPointer]() {
+            while (selfPointer && selfPointer->_functions["autoClicker"].enabled) {
                 dispatch_async(dispatch_get_main_queue(), ^{
                     // Эмуляция клика
-                    // Можно добавить визуальный эффект или звук
                 });
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
             }
@@ -602,25 +601,19 @@ struct FunctionState {
 }
 
 - (void)toggleFPSUnlock {
-    // Разблокировка FPS (убираем ограничения)
-    if (_functions["fpsUnlock"].enabled) {
-        // Код для разблокировки FPS
-    }
+    // Разблокировка FPS
 }
 
 - (void)togglePotatoGraphics {
-    if (_functions["potatoGraphics"].enabled) {
-        // Уменьшение качества графики
-    }
+    // Уменьшение качества графики
 }
 
 - (void)toggleFPSCounter {
-    // Включается автоматически в notificationLoop
+    // Включается автоматически
 }
 
 - (void)toggleBrightness {
     if (_functions["brightnessBoost"].enabled) {
-        // Увеличение яркости
         [[UIScreen mainScreen] setBrightness:1.0];
     } else {
         [[UIScreen mainScreen] setBrightness:0.5];
@@ -632,7 +625,6 @@ struct FunctionState {
     UIView *existingOverlay = [mainWindow viewWithTag:999];
     
     if (_functions["readingMode"].enabled && !existingOverlay) {
-        // Режим чтения (сепия)
         UIView *colorOverlay = [[UIView alloc] initWithFrame:mainWindow.bounds];
         colorOverlay.backgroundColor = [UIColor colorWithRed:0.9 green:0.8 blue:0.7 alpha:0.3];
         colorOverlay.tag = 999;
@@ -645,7 +637,6 @@ struct FunctionState {
 
 - (void)toggleNightMode {
     if (_functions["nightMode"].enabled) {
-        // Ночной режим (темная тема)
         if (@available(iOS 13.0, *)) {
             // Используем системную темную тему
         }
@@ -654,14 +645,12 @@ struct FunctionState {
 
 - (void)toggleBatterySaver {
     if (_functions["batterySaver"].enabled) {
-        // Энергосбережение
         [[NSProcessInfo processInfo] setProcessName:@"BatterySaver"];
     }
 }
 
 - (void)toggleAnimationBoost {
     if (_functions["animationBoost"].enabled) {
-        // Ускорение анимаций
         [[NSUserDefaults standardUserDefaults] setFloat:0.5 forKey:@"UIAnimationSpeedScale"];
     } else {
         [[NSUserDefaults standardUserDefaults] setFloat:1.0 forKey:@"UIAnimationSpeedScale"];
@@ -672,7 +661,6 @@ struct FunctionState {
     UIWindow *mainWindow = [UIApplication sharedApplication].keyWindow;
     
     if (_functions["screenZoom"].enabled) {
-        // Зум экрана
         [UIView animateWithDuration:0.3 animations:^{
             mainWindow.transform = CGAffineTransformMakeScale(1.2, 1.2);
         }];
@@ -709,7 +697,6 @@ struct FunctionState {
     UIWindow *mainWindow = [UIApplication sharedApplication].keyWindow;
     
     if (_functions["widescreenMode"].enabled) {
-        // Широкоформатный режим (21:9)
         [UIView animateWithDuration:0.5 animations:^{
             mainWindow.transform = CGAffineTransformMakeScale(1.3, 1.0);
         }];
@@ -742,7 +729,6 @@ extern "C" {
         }
     }
     
-    // Точка входа для dylib
     __attribute__((constructor)) static void on_load() {
         init_game_helper();
     }
