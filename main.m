@@ -3,6 +3,7 @@
 #import <WebKit/WebKit.h>
 #import <mach/mach.h>
 #import <mach-o/dyld.h>
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h> // Добавлено для UTType
 
 // Добавляем объявление функции vm_region_64 если не импортируется
 extern kern_return_t vm_region_64
@@ -36,7 +37,7 @@ extern kern_return_t vm_region_64
 // Toolbox
 @property (nonatomic, strong) UITableView *scriptsTableView;
 @property (nonatomic, strong) NSMutableArray<Script *> *scripts;
-@property (nonatomic, strong) UIButton *btnNewScript;  // Переименовано с newScriptButton
+@property (nonatomic, strong) UIButton *btnNewScript;
 @property (nonatomic, strong) UIButton *importScriptButton;
 
 // Editor
@@ -50,7 +51,7 @@ extern kern_return_t vm_region_64
 
 // Build
 @property (nonatomic, strong) UITextView *yamlOutput;
-@property (nonatomic, strong) UIButton *btnCopyYaml;  // Переименовано с copyYamlButton
+@property (nonatomic, strong) UIButton *btnCopyYaml;
 @property (nonatomic, strong) UIButton *pushToGitButton;
 @property (nonatomic, strong) UITextField *repoField;
 @property (nonatomic, strong) UITextField *tokenField;
@@ -487,30 +488,39 @@ extern kern_return_t vm_region_64
     NSString *scriptName = _scriptNameField.text.length > 0 ? _scriptNameField.text : @"script.m";
     NSString *dylibName = [scriptName stringByReplacingOccurrencesOfString:@".m" withString:@".dylib"];
     
-    // Разбиваем строку чтобы избежать предупреждения
-    NSString *yaml = [NSString stringWithFormat:
-        @"name: Compile %%@" "\n"
-        @"on: [push]\n"
-        @"jobs:\n"
-        @"  build:\n"
-        @"    runs-on: macos-latest\n"
-        @"    steps:\n"
-        @"    - uses: actions/checkout@v4\n"
-        @"    - name: Compile with Xcode\n"
-        @"      run: |\n"
-        @"        xcrun -sdk iphoneos clang -arch arm64 -fobjc-arc -dynamiclib \\\n"
-        @"          -framework UIKit \\\n"
-        @"          -framework Foundation \\\n"
-        @"          -framework CoreGraphics \\\n"
-        @"          -isysroot $(xcrun -sdk iphoneos --show-sdk-path) \\\n"
-        @"          %%@ \\\n"
-        @"          -o %%@\n"
-        @"    - name: Upload dylib\n"
-        @"      uses: actions/upload-artifact@v4\n"
-        @"      with:\n"
-        @"        name: %%@\n"
-        @"        path: %%@",
-        scriptName, dylibName, dylibName, dylibName];
+    // Исправлено: используем отдельные строки без форматирования внутри
+    NSMutableString *yaml = [NSMutableString string];
+    [yaml appendString:@"name: Compile "];
+    [yaml appendString:scriptName];
+    [yaml appendString:@"\n"];
+    [yaml appendString:@"on: [push]\n"];
+    [yaml appendString:@"jobs:\n"];
+    [yaml appendString:@"  build:\n"];
+    [yaml appendString:@"    runs-on: macos-latest\n"];
+    [yaml appendString:@"    steps:\n"];
+    [yaml appendString:@"    - uses: actions/checkout@v4\n"];
+    [yaml appendString:@"    - name: Compile with Xcode\n"];
+    [yaml appendString:@"      run: |\n"];
+    [yaml appendString:@"        xcrun -sdk iphoneos clang -arch arm64 -fobjc-arc -dynamiclib \\\n"];
+    [yaml appendString:@"          -framework UIKit \\\n"];
+    [yaml appendString:@"          -framework Foundation \\\n"];
+    [yaml appendString:@"          -framework CoreGraphics \\\n"];
+    [yaml appendString:@"          -isysroot $(xcrun -sdk iphoneos --show-sdk-path) \\\n"];
+    [yaml appendString:@"          "];
+    [yaml appendString:scriptName];
+    [yaml appendString:@" \\\n"];
+    [yaml appendString:@"          -o "];
+    [yaml appendString:dylibName];
+    [yaml appendString:@"\n"];
+    [yaml appendString:@"    - name: Upload dylib\n"];
+    [yaml appendString:@"      uses: actions/upload-artifact@v4\n"];
+    [yaml appendString:@"      with:\n"];
+    [yaml appendString:@"        name: "];
+    [yaml appendString:dylibName];
+    [yaml appendString:@"\n"];
+    [yaml appendString:@"        path: "];
+    [yaml appendString:dylibName];
+    [yaml appendString:@"\n"];
     
     _yamlOutput.text = yaml;
 }
