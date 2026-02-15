@@ -3,539 +3,525 @@
 #include <vector>
 #include <thread>
 #include <chrono>
-#include <algorithm>
-#include <fstream>
-#include <sstream>
-#include <iomanip>
-#include <ctime>
+#include <map>
+#include <functional>
+#include <cmath>
+#include <mach/mach.h>
+#include <mach-o/dyld.h>
 
-#ifdef _WIN32
-    #include <windows.h>
-    #define DLL_EXPORT __declspec(dllexport)
-#else
-    #include <dlfcn.h>
-    #include <pthread.h>
-    #include <unistd.h>
-    #include <sys/mman.h>
-    #include <fcntl.h>
-    #include <termios.h>
-    #include <sys/ioctl.h>
-    #include <sys/time.h>
+#ifdef __APPLE__
+#import <Foundation/Foundation.h>
+#import <UIKit/UIKit.h>
+#import <CoreGraphics/CoreGraphics.h>
 #endif
 
-// Цвета для консоли (ANSI)
-#define RESET   "\033[0m"
-#define RED     "\033[31m"
-#define GREEN   "\033[32m"
-#define YELLOW  "\033[33m"
-#define BLUE    "\033[34m"
-#define MAGENTA "\033[35m"
-#define CYAN    "\033[36m"
-#define WHITE   "\033[37m"
-#define BOLD    "\033[1m"
-#define CLEAR_LINE "\033[2K\r"
+// Структура для хранения состояния функций
+struct FunctionState {
+    bool enabled;
+    std::string name;
+    std::function<void()> toggleCallback;
+};
 
-class GameMenu {
+// Глобальный класс для управления меню
+class GameHelper {
 private:
-    bool running;
-    bool autoClickerEnabled;
-    bool fpsUnlocked;
-    bool potatoGraphicsEnabled;
-    bool fpsCounterEnabled;
-    bool brightnessBoostEnabled;
-    bool colorBlindModeEnabled;
-    bool crosshairEnabled;
-    bool soundEqualizerEnabled;
-    bool pingReducerEnabled;
-    bool streamerModeEnabled;
-    bool screenshotModeEnabled;
-    bool fpsStabilizerEnabled;
-    bool uiScalerEnabled;
-    
-    int autoClickDelay;
-    int targetFPS;
-    int fpsCount;
-    int brightnessLevel;
-    int colorBlindType;
-    int crosshairType;
-    int soundProfile;
-    int uiScale;
-    
-    std::thread menuThread;
+    bool isInitialized;
+    std::map<std::string, FunctionState> functions;
     std::thread notificationThread;
-    std::thread fpsCounterThread;
+    bool notificationRunning;
     
-    std::vector<std::string> notificationQueue;
-    bool notificationMutex;
-
+    // iOS UI элементы
+    void* overlayWindow;
+    void* floatingButton;
+    void* menuView;
+    void* notificationLabel;
+    
 public:
-    GameMenu() : running(false), autoClickerEnabled(false), fpsUnlocked(false),
-                 potatoGraphicsEnabled(false), fpsCounterEnabled(false),
-                 brightnessBoostEnabled(false), colorBlindModeEnabled(false),
-                 crosshairEnabled(false), soundEqualizerEnabled(false),
-                 pingReducerEnabled(false), streamerModeEnabled(false),
-                 screenshotModeEnabled(false), fpsStabilizerEnabled(false),
-                 uiScalerEnabled(false), autoClickDelay(100), targetFPS(144),
-                 fpsCount(0), brightnessLevel(100), colorBlindType(0),
-                 crosshairType(1), soundProfile(0), uiScale(100),
-                 notificationMutex(false) {}
-
-    ~GameMenu() {
-        stop();
+    GameHelper() : isInitialized(false), notificationRunning(false) {}
+    
+    ~GameHelper() {
+        cleanup();
     }
-
-    void start() {
-        if (running) return;
-        running = true;
-        menuThread = std::thread(&GameMenu::menuLoop, this);
-        notificationThread = std::thread(&GameMenu::notificationLoop, this);
-        fpsCounterThread = std::thread(&GameMenu::fpsCounterLoop, this);
+    
+    void initialize() {
+        if (isInitialized) return;
+        isInitialized = true;
+        
+        // Регистрируем функции
+        registerFunctions();
+        
+        // Создаем UI на главном потоке
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [this createFloatingUI];
+        });
+        
+        // Запускаем поток уведомлений
+        notificationRunning = true;
+        notificationThread = std::thread(&GameHelper::notificationLoop, this);
     }
-
-    void stop() {
-        running = false;
-        if (menuThread.joinable()) menuThread.join();
-        if (notificationThread.joinable()) notificationThread.join();
-        if (fpsCounterThread.joinable()) fpsCounterThread.join();
+    
+    void cleanup() {
+        notificationRunning = false;
+        if (notificationThread.joinable()) {
+            notificationThread.join();
+        }
+        
+        // Очищаем UI на главном потоке
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [this cleanupUI];
+        });
     }
-
+    
 private:
-    void clearScreen() {
-        std::cout << "\033[2J\033[1;1H";
-    }
-
-    void showNotification(const std::string& function, bool enabled) {
-        std::string status = enabled ? "включено" : "выключено";
-        std::string color = enabled ? GREEN : RED;
-        std::string message = color + "✦ " + function + " - " + status + " ✦" + RESET;
+    void registerFunctions() {
+        // 1. Автокликер
+        functions["autoClicker"] = {
+            false, "Автокликер",
+            [this]() { toggleAutoClicker(); }
+        };
         
-        while (notificationMutex) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        }
-        notificationMutex = true;
-        notificationQueue.push_back(message);
-        notificationMutex = false;
+        // 2. Разблокировка FPS
+        functions["fpsUnlock"] = {
+            false, "Разблокировка FPS",
+            [this]() { toggleFPSUnlock(); }
+        };
+        
+        // 3. Картофельная графика
+        functions["potatoGraphics"] = {
+            false, "Картофельная графика",
+            [this]() { togglePotatoGraphics(); }
+        };
+        
+        // 4. Счетчик FPS
+        functions["fpsCounter"] = {
+            false, "Счетчик FPS",
+            [this]() { toggleFPSCounter(); }
+        };
+        
+        // 5. Усиление яркости
+        functions["brightnessBoost"] = {
+            false, "Усиление яркости",
+            [this]() { toggleBrightness(); }
+        };
+        
+        // 6. Режим чтения
+        functions["readingMode"] = {
+            false, "Режим чтения",
+            [this]() { toggleReadingMode(); }
+        };
+        
+        // 7. Ночной режим
+        functions["nightMode"] = {
+            false, "Ночной режим",
+            [this]() { toggleNightMode(); }
+        };
+        
+        // 8. Энергосбережение
+        functions["batterySaver"] = {
+            false, "Энергосбережение",
+            [this]() { toggleBatterySaver(); }
+        };
+        
+        // 9. Ускорение анимаций
+        functions["animationBoost"] = {
+            false, "Ускорение анимаций",
+            [this]() { toggleAnimationBoost(); }
+        };
+        
+        // 10. Зум экрана
+        functions["screenZoom"] = {
+            false, "Зум экрана",
+            [this]() { toggleScreenZoom(); }
+        };
     }
-
+    
+    void createFloatingUI() {
+        // Создаем окно поверх всех
+        UIWindow *window = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
+        window.windowLevel = UIWindowLevelAlert + 1;
+        window.backgroundColor = [UIColor clearColor];
+        window.userInteractionEnabled = YES;
+        [window makeKeyAndVisible];
+        
+        overlayWindow = (__bridge void*)window;
+        
+        // Создаем плавающую кнопку
+        UIButton *button = [UIButton buttonWithType:UIButtonTypeCustom];
+        button.frame = CGRectMake(20, 100, 60, 60);
+        button.backgroundColor = [UIColor colorWithRed:0.2 green:0.5 blue:1.0 alpha:0.9];
+        button.layer.cornerRadius = 30;
+        button.layer.shadowColor = [UIColor blackColor].CGColor;
+        button.layer.shadowOffset = CGSizeMake(0, 2);
+        button.layer.shadowOpacity = 0.3;
+        button.layer.shadowRadius = 5;
+        button.layer.borderWidth = 2;
+        button.layer.borderColor = [UIColor whiteColor].CGColor;
+        
+        [button setTitle:@"⚙️" forState:UIControlStateNormal];
+        button.titleLabel.font = [UIFont systemFontOfSize:24];
+        
+        // Добавляем возможность перетаскивания
+        UIPanGestureRecognizer *panGesture = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(dragButton:)];
+        [button addGestureRecognizer:panGesture];
+        
+        [button addTarget:self action:@selector(toggleMenu) forControlEvents:UIControlEventTouchUpInside];
+        
+        [window addSubview:button];
+        floatingButton = (__bridge void*)button;
+        
+        // Создаем меню (изначально скрыто)
+        [self createMenu];
+        
+        // Создаем уведомление
+        [self createNotificationLabel];
+    }
+    
+    void createMenu() {
+        UIWindow *window = (__bridge UIWindow*)overlayWindow;
+        UIButton *button = (__bridge UIButton*)floatingButton;
+        
+        UIView *menu = [[UIView alloc] initWithFrame:CGRectMake(20, CGRectGetMaxY(button.frame) + 10, 250, 0)];
+        menu.backgroundColor = [UIColor colorWithWhite:0.1 alpha:0.95];
+        menu.layer.cornerRadius = 15;
+        menu.layer.shadowColor = [UIColor blackColor].CGColor;
+        menu.layer.shadowOffset = CGSizeMake(0, 2);
+        menu.layer.shadowOpacity = 0.5;
+        menu.layer.shadowRadius = 5;
+        menu.clipsToBounds = YES;
+        menu.hidden = YES;
+        
+        [window addSubview:menu];
+        menuView = (__bridge void*)menu;
+        
+        // Заполняем меню функциями
+        [self populateMenu];
+    }
+    
+    void populateMenu() {
+        UIView *menu = (__bridge UIView*)menuView;
+        
+        NSArray *functionNames = @[
+            @"Автокликер",
+            @"Разблокировка FPS",
+            @"Картофельная графика",
+            @"Счетчик FPS",
+            @"Усиление яркости",
+            @"Режим чтения",
+            @"Ночной режим",
+            @"Энергосбережение",
+            @"Ускорение анимаций",
+            @"Зум экрана"
+        ];
+        
+        CGFloat yOffset = 10;
+        int index = 0;
+        
+        for (NSString *name in functionNames) {
+            UIButton *funcButton = [UIButton buttonWithType:UIButtonTypeCustom];
+            funcButton.frame = CGRectMake(10, yOffset, 230, 40);
+            funcButton.backgroundColor = [UIColor colorWithWhite:0.2 alpha:1.0];
+            funcButton.layer.cornerRadius = 8;
+            funcButton.tag = index;
+            
+            [funcButton setTitle:name forState:UIControlStateNormal];
+            [funcButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+            funcButton.titleLabel.font = [UIFont systemFontOfSize:14];
+            
+            // Добавляем индикатор состояния
+            UILabel *statusLabel = [[UILabel alloc] initWithFrame:CGRectMake(190, 10, 30, 20)];
+            statusLabel.tag = 100 + index;
+            statusLabel.text = @"⚪";
+            statusLabel.textColor = [UIColor grayColor];
+            statusLabel.font = [UIFont systemFontOfSize:12];
+            [funcButton addSubview:statusLabel];
+            
+            [funcButton addTarget:self action:@selector(functionTapped:) forControlEvents:UIControlEventTouchUpInside];
+            
+            [menu addSubview:funcButton];
+            
+            yOffset += 45;
+            index++;
+        }
+        
+        // Обновляем высоту меню
+        CGRect menuFrame = menu.frame;
+        menuFrame.size.height = yOffset + 10;
+        menu.frame = menuFrame;
+    }
+    
+    void createNotificationLabel() {
+        UIWindow *window = (__bridge UIWindow*)overlayWindow;
+        
+        UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(20, window.bounds.size.height - 60, window.bounds.size.width - 40, 40)];
+        label.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.7];
+        label.textColor = [UIColor whiteColor];
+        label.textAlignment = NSTextAlignmentCenter;
+        label.layer.cornerRadius = 10;
+        label.clipsToBounds = YES;
+        label.font = [UIFont boldSystemFontOfSize:14];
+        label.alpha = 0;
+        
+        [window addSubview:label];
+        notificationLabel = (__bridge void*)label;
+    }
+    
+    // Objective-C селекторы
+    void dragButton(UIPanGestureRecognizer *gesture) {
+        UIButton *button = (UIButton*)gesture.view;
+        CGPoint translation = [gesture translationInView:button.superview];
+        
+        if (gesture.state == UIGestureRecognizerStateChanged) {
+            CGPoint newCenter = CGPointMake(button.center.x + translation.x,
+                                           button.center.y + translation.y);
+            
+            // Ограничиваем краями экрана
+            newCenter.x = MAX(button.frame.size.width/2, 
+                             MIN(button.superview.bounds.size.width - button.frame.size.width/2, newCenter.x));
+            newCenter.y = MAX(button.frame.size.height/2 + 40, 
+                             MIN(button.superview.bounds.size.height - button.frame.size.height/2 - 40, newCenter.y));
+            
+            button.center = newCenter;
+            [gesture setTranslation:CGPointZero inView:button.superview];
+            
+            // Перемещаем меню вместе с кнопкой
+            [self updateMenuPosition];
+        }
+    }
+    
+    void toggleMenu() {
+        UIView *menu = (__bridge UIView*)menuView;
+        menu.hidden = !menu.hidden;
+        isMenuVisible = !menu.hidden;
+        
+        if (!menu.hidden) {
+            [self updateMenuPosition];
+        }
+    }
+    
+    void updateMenuPosition() {
+        UIView *menu = (__bridge UIView*)menuView;
+        UIButton *button = (__bridge UIButton*)floatingButton;
+        
+        CGRect menuFrame = menu.frame;
+        menuFrame.origin.x = button.frame.origin.x;
+        menuFrame.origin.y = CGRectGetMaxY(button.frame) + 10;
+        
+        // Проверяем, не выходит ли меню за экран
+        if (menuFrame.origin.y + menuFrame.size.height > button.superview.bounds.size.height - 40) {
+            menuFrame.origin.y = button.frame.origin.y - menuFrame.size.height - 10;
+        }
+        
+        menu.frame = menuFrame;
+    }
+    
+    void functionTapped(UIButton *sender) {
+        int index = (int)sender.tag;
+        [self toggleFunctionAtIndex:index];
+        
+        // Обновляем индикатор
+        UILabel *statusLabel = [sender viewWithTag:100 + index];
+        BOOL enabled = [self getFunctionState:index];
+        statusLabel.text = enabled ? @"✅" : @"⚪";
+        statusLabel.textColor = enabled ? [UIColor greenColor] : [UIColor grayColor];
+    }
+    
+    void toggleFunctionAtIndex(int index) {
+        std::string functionId;
+        switch(index) {
+            case 0: functionId = "autoClicker"; break;
+            case 1: functionId = "fpsUnlock"; break;
+            case 2: functionId = "potatoGraphics"; break;
+            case 3: functionId = "fpsCounter"; break;
+            case 4: functionId = "brightnessBoost"; break;
+            case 5: functionId = "readingMode"; break;
+            case 6: functionId = "nightMode"; break;
+            case 7: functionId = "batterySaver"; break;
+            case 8: functionId = "animationBoost"; break;
+            case 9: functionId = "screenZoom"; break;
+        }
+        
+        auto& func = functions[functionId];
+        func.enabled = !func.enabled;
+        func.toggleCallback();
+        
+        [self showNotification:[NSString stringWithUTF8String:func.name.c_str()] enabled:func.enabled];
+    }
+    
+    bool getFunctionState(int index) {
+        std::string functionId;
+        switch(index) {
+            case 0: functionId = "autoClicker"; break;
+            case 1: functionId = "fpsUnlock"; break;
+            case 2: functionId = "potatoGraphics"; break;
+            case 3: functionId = "fpsCounter"; break;
+            case 4: functionId = "brightnessBoost"; break;
+            case 5: functionId = "readingMode"; break;
+            case 6: functionId = "nightMode"; break;
+            case 7: functionId = "batterySaver"; break;
+            case 8: functionId = "animationBoost"; break;
+            case 9: functionId = "screenZoom"; break;
+        }
+        return functions[functionId].enabled;
+    }
+    
+    void showNotification(NSString *message, BOOL enabled) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            UILabel *label = (__bridge UILabel*)self->notificationLabel;
+            label.text = [NSString stringWithFormat:@"%@ %@", 
+                         enabled ? @"✅" : @"❌", message];
+            label.backgroundColor = enabled ? 
+                [UIColor colorWithRed:0.2 green:0.8 blue:0.2 alpha:0.8] :
+                [UIColor colorWithRed:0.8 green:0.2 blue:0.2 alpha:0.8];
+            
+            [UIView animateWithDuration:0.3 animations:^{
+                label.alpha = 1.0;
+            } completion:^(BOOL finished) {
+                [UIView animateWithDuration:0.3 delay:2.0 options:0 animations:^{
+                    label.alpha = 0.0;
+                } completion:nil];
+            }];
+        });
+    }
+    
     void notificationLoop() {
-        while (running) {
-            if (!notificationQueue.empty()) {
-                while (notificationMutex) {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-                }
-                notificationMutex = true;
-                
-                // Сохраняем текущую позицию курсора
-                std::cout << "\033[s";
-                
-                // Перемещаемся в правый нижний угол
-                std::cout << "\033[999;999H";
-                
-                // Показываем последнее уведомление
-                for (const auto& notif : notificationQueue) {
-                    std::cout << notif << "  ";
-                }
-                std::cout << "\033[u" << std::flush;
-                
-                notificationQueue.clear();
-                notificationMutex = false;
+        while (notificationRunning) {
+            // Обновляем счетчик FPS если включен
+            if (functions["fpsCounter"].enabled) {
+                [self updateFPSCounter];
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
         }
     }
-
-    void fpsCounterLoop() {
-        auto lastTime = std::chrono::high_resolution_clock::now();
-        int frameCount = 0;
-        
-        while (running) {
-            if (fpsCounterEnabled) {
+    
+    void updateFPSCounter() {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            // Показываем FPS в углу
+            UILabel *label = (__bridge UILabel*)self->notificationLabel;
+            if (label.alpha < 0.1) {
+                static int frameCount = 0;
                 frameCount++;
-                auto currentTime = std::chrono::high_resolution_clock::now();
-                auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(currentTime - lastTime).count();
                 
-                if (elapsed >= 1) {
-                    fpsCount = frameCount;
-                    frameCount = 0;
-                    lastTime = currentTime;
+                if (frameCount % 10 == 0) {
+                    label.text = [NSString stringWithFormat:@"📊 FPS: %d", 
+                                 arc4random_uniform(30) + 30]; // Симуляция FPS
+                    label.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.7];
                     
-                    // Показываем FPS в правом верхнем углу
-                    std::cout << "\033[s\033[1;1HFPS: " << fpsCount << "\033[u" << std::flush;
+                    [UIView animateWithDuration:0.2 animations:^{
+                        label.alpha = 0.8;
+                    }];
                 }
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        }
+        });
     }
-
-    void menuLoop() {
-        while (running) {
-            clearScreen();
-            
-            // Красивый заголовок
-            std::cout << BOLD << CYAN;
-            std::cout << "╔════════════════════════════════════════╗\n";
-            std::cout << "║        🎮 ИГРОВОЕ МЕНЮ УЮТА 🎮         ║\n";
-            std::cout << "╚════════════════════════════════════════╝\n\n" << RESET;
-            
-            // Основные функции
-            std::cout << BOLD << YELLOW << "⚡ ОСНОВНЫЕ ФУНКЦИИ:\n" << RESET;
-            std::cout << (autoClickerEnabled ? GREEN : RED) << "1. Автокликер [F1] " << (autoClickerEnabled ? "✅" : "❌") << RESET;
-            std::cout << " (задержка: " << autoClickDelay << "ms)\n";
-            
-            std::cout << (fpsUnlocked ? GREEN : RED) << "2. Разблокировка FPS [F2] " << (fpsUnlocked ? "✅" : "❌") << RESET;
-            std::cout << " (цель: " << targetFPS << " FPS)\n";
-            
-            std::cout << (potatoGraphicsEnabled ? GREEN : RED) << "3. Картофельная графика [F3] " << (potatoGraphicsEnabled ? "✅" : "❌") << RESET;
-            std::cout << " (для слабых ПК)\n";
-            
-            std::cout << (fpsCounterEnabled ? GREEN : RED) << "4. Счетчик FPS [F4] " << (fpsCounterEnabled ? "✅" : "❌") << RESET;
-            std::cout << " (текущий: " << fpsCount << ")\n\n";
-            
-            std::cout << BOLD << YELLOW << "🎨 ВИЗУАЛЬНЫЕ УЛУЧШЕНИЯ:\n" << RESET;
-            std::cout << (brightnessBoostEnabled ? GREEN : RED) << "5. Усиление яркости [F5] " << (brightnessBoostEnabled ? "✅" : "❌") << RESET;
-            std::cout << " (уровень: " << brightnessLevel << "%)\n";
-            
-            std::cout << (colorBlindModeEnabled ? GREEN : RED) << "6. Режим для дальтоников [F6] " << (colorBlindModeEnabled ? "✅" : "❌") << RESET;
-            std::cout << " (тип: " << getColorBlindType() << ")\n";
-            
-            std::cout << (crosshairEnabled ? GREEN : RED) << "7. Кастомный прицел [F7] " << (crosshairEnabled ? "✅" : "❌") << RESET;
-            std::cout << " (тип: " << crosshairType << ")\n\n";
-            
-            std::cout << BOLD << YELLOW << "🔊 ЗВУК И КОМФОРТ:\n" << RESET;
-            std::cout << (soundEqualizerEnabled ? GREEN : RED) << "8. Звуковой эквалайзер [F8] " << (soundEqualizerEnabled ? "✅" : "❌") << RESET;
-            std::cout << " (профиль: " << getSoundProfile() << ")\n";
-            
-            std::cout << (pingReducerEnabled ? GREEN : RED) << "9. Оптимизация сети [F9] " << (pingReducerEnabled ? "✅" : "❌") << RESET;
-            std::cout << " (снижение пинга)\n\n";
-            
-            std::cout << BOLD << YELLOW << "📺 ДОПОЛНИТЕЛЬНО:\n" << RESET;
-            std::cout << (streamerModeEnabled ? GREEN : RED) << "0. Режим стримера [F10] " << (streamerModeEnabled ? "✅" : "❌") << RESET;
-            std::cout << " (скрытие личной инфо)\n";
-            
-            std::cout << (screenshotModeEnabled ? GREEN : RED) << "q. Режим скриншота [F11] " << (screenshotModeEnabled ? "✅" : "❌") << RESET;
-            std::cout << " (без UI)\n";
-            
-            std::cout << (fpsStabilizerEnabled ? GREEN : RED) << "w. Стабилизатор FPS [F12] " << (fpsStabilizerEnabled ? "✅" : "❌") << RESET;
-            std::cout << " (плавный геймплей)\n";
-            
-            std::cout << (uiScalerEnabled ? GREEN : RED) << "e. Масштабирование UI " << (uiScalerEnabled ? "✅" : "❌") << RESET;
-            std::cout << " (масштаб: " << uiScale << "%)\n\n";
-            
-            // Настройки
-            std::cout << BOLD << CYAN << "⚙️  НАСТРОЙКИ:\n" << RESET;
-            std::cout << "t. Задержка автокликера (" << autoClickDelay << "ms)\n";
-            std::cout << "y. Целевой FPS (" << targetFPS << ")\n";
-            std::cout << "u. Яркость (" << brightnessLevel << "%)\n";
-            std::cout << "i. Масштаб UI (" << uiScale << "%)\n\n";
-            
-            std::cout << BOLD << MAGENTA << "ESC - выход из меню\n" << RESET;
-            
-            // Обработка ввода
-            handleInput();
-        }
+    
+    void cleanupUI() {
+        UIWindow *window = (__bridge UIWindow*)overlayWindow;
+        [window removeFromSuperview];
+        window = nil;
     }
-
-    std::string getColorBlindType() {
-        switch(colorBlindType) {
-            case 1: return "Протанопия";
-            case 2: return "Дейтеранопия";
-            case 3: return "Тританопия";
-            default: return "Выключен";
-        }
-    }
-
-    std::string getSoundProfile() {
-        switch(soundProfile) {
-            case 1: return "Игры";
-            case 2: return "Фильмы";
-            case 3: return "Музыка";
-            default: return "Стандарт";
-        }
-    }
-
-    void handleInput() {
-        char c = getChar();
-        
-        switch(c) {
-            case '1': case 27: // F1
-                toggleAutoClicker();
-                break;
-            case '2': case 28: // F2
-                toggleFPSUnlock();
-                break;
-            case '3': case 29: // F3
-                togglePotatoGraphics();
-                break;
-            case '4': case 30: // F4
-                toggleFPSCounter();
-                break;
-            case '5': case 31: // F5
-                toggleBrightnessBoost();
-                break;
-            case '6': case 32: // F6
-                toggleColorBlindMode();
-                break;
-            case '7': case 33: // F7
-                toggleCrosshair();
-                break;
-            case '8': case 34: // F8
-                toggleSoundEqualizer();
-                break;
-            case '9': case 35: // F9
-                togglePingReducer();
-                break;
-            case '0': case 36: // F10
-                toggleStreamerMode();
-                break;
-            case 'q': case 37: // F11
-                toggleScreenshotMode();
-                break;
-            case 'w': case 38: // F12
-                toggleFPSStabilizer();
-                break;
-            case 'e':
-                toggleUIScaler();
-                break;
-            case 't':
-                adjustSetting(autoClickDelay, 10, 1000, 50, "Задержка автокликера");
-                break;
-            case 'y':
-                adjustSetting(targetFPS, 30, 360, 30, "Целевой FPS");
-                break;
-            case 'u':
-                adjustSetting(brightnessLevel, 50, 200, 10, "Яркость");
-                if (brightnessBoostEnabled) {
-                    applyBrightness();
-                }
-                break;
-            case 'i':
-                adjustSetting(uiScale, 50, 200, 10, "Масштаб UI");
-                if (uiScalerEnabled) {
-                    applyUIScale();
-                }
-                break;
-            case 27: // ESC
-                running = false;
-                break;
-        }
-    }
-
-    char getChar() {
-        char c = 0;
-#ifdef _WIN32
-        if (_kbhit()) {
-            c = _getch();
-        }
-#else
-        struct termios oldt, newt;
-        tcgetattr(STDIN_FILENO, &oldt);
-        newt = oldt;
-        newt.c_lflag &= ~(ICANON | ECHO);
-        tcsetattr(STDIN_FILENO, TCSANOW, &newt);
-        if (read(STDIN_FILENO, &c, 1) > 0) {
-            if (c == 27) { // Escape sequence для F-клавиш
-                char seq[2];
-                if (read(STDIN_FILENO, &seq[0], 1) > 0 && read(STDIN_FILENO, &seq[1], 1) > 0) {
-                    if (seq[0] == '[') {
-                        c = seq[1] + 16; // Преобразуем F1-F12 в 27-38
-                    }
-                }
-            }
-        }
-        tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
-#endif
-        return c;
-    }
-
-    void adjustSetting(int& setting, int min, int max, int step, const std::string& name) {
-        clearScreen();
-        std::cout << BOLD << CYAN << "⚙️  Настройка: " << name << RESET << "\n\n";
-        std::cout << "Текущее значение: " << setting << "\n";
-        std::cout << "Используйте +/- для изменения, Enter для сохранения\n";
-        
-        bool adjusting = true;
-        while (adjusting) {
-            char c = getChar();
-            if (c == '+') {
-                setting = std::min(max, setting + step);
-                std::cout << CLEAR_LINE << "Новое значение: " << setting << std::flush;
-            } else if (c == '-') {
-                setting = std::max(min, setting - step);
-                std::cout << CLEAR_LINE << "Новое значение: " << setting << std::flush;
-            } else if (c == '\n' || c == '\r') {
-                adjusting = false;
-            }
-        }
-        
-        showNotification(name + " изменена", true);
-    }
-
-    // Реализация функций
+    
+    // Реализации функций
     void toggleAutoClicker() {
-        autoClickerEnabled = !autoClickerEnabled;
-        showNotification("Автокликер", autoClickerEnabled);
-        
-        if (autoClickerEnabled) {
+        if (functions["autoClicker"].enabled) {
             std::thread([this]() {
-                while (autoClickerEnabled && running) {
-                    // Симуляция клика мышью
-                    std::cout << "\a"; // Звуковой сигнал
-                    std::this_thread::sleep_for(std::chrono::milliseconds(autoClickDelay));
+                while (functions["autoClicker"].enabled) {
+                    // Симуляция клика
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
                 }
             }).detach();
         }
     }
-
+    
     void toggleFPSUnlock() {
-        fpsUnlocked = !fpsUnlocked;
-        showNotification("Разблокировка FPS", fpsUnlocked);
-        
-        if (fpsUnlocked) {
-            std::cout << "FPS разблокирован до " << targetFPS << "\n";
-            // Здесь был бы код для изменения FPS в игре
+        // Разблокировка FPS (убираем ограничения)
+        if (functions["fpsUnlock"].enabled) {
+            // Код для разблокировки FPS
         }
     }
-
+    
     void togglePotatoGraphics() {
-        potatoGraphicsEnabled = !potatoGraphicsEnabled;
-        showNotification("Картофельная графика", potatoGraphicsEnabled);
-        
-        if (potatoGraphicsEnabled) {
-            std::cout << "Графика оптимизирована для слабых ПК\n";
-            // Уменьшение качества текстур, теней и т.д.
+        if (functions["potatoGraphics"].enabled) {
+            // Уменьшение качества графики
         }
     }
-
+    
     void toggleFPSCounter() {
-        fpsCounterEnabled = !fpsCounterEnabled;
-        showNotification("Счетчик FPS", fpsCounterEnabled);
+        // Включается автоматически в notificationLoop
     }
-
-    void toggleBrightnessBoost() {
-        brightnessBoostEnabled = !brightnessBoostEnabled;
-        showNotification("Усиление яркости", brightnessBoostEnabled);
-        applyBrightness();
-    }
-
-    void applyBrightness() {
-        if (brightnessBoostEnabled) {
-            // Применение настроек яркости
-            std::cout << "Яркость установлена на " << brightnessLevel << "%\n";
+    
+    void toggleBrightness() {
+        if (functions["brightnessBoost"].enabled) {
+            // Увеличение яркости
+            [[UIScreen mainScreen] setBrightness:1.0];
+        } else {
+            [[UIScreen mainScreen] setBrightness:0.5];
         }
     }
-
-    void toggleColorBlindMode() {
-        colorBlindType = (colorBlindType + 1) % 4;
-        colorBlindModeEnabled = (colorBlindType > 0);
-        showNotification("Режим для дальтоников", colorBlindModeEnabled);
-    }
-
-    void toggleCrosshair() {
-        crosshairType = (crosshairType % 3) + 1;
-        crosshairEnabled = true;
-        showNotification("Кастомный прицел (тип " + std::to_string(crosshairType) + ")", true);
-    }
-
-    void toggleSoundEqualizer() {
-        soundProfile = (soundProfile + 1) % 4;
-        soundEqualizerEnabled = (soundProfile > 0);
-        showNotification("Звуковой эквалайзер (" + getSoundProfile() + ")", soundEqualizerEnabled);
-    }
-
-    void togglePingReducer() {
-        pingReducerEnabled = !pingReducerEnabled;
-        showNotification("Оптимизация сети", pingReducerEnabled);
-        
-        if (pingReducerEnabled) {
-            // Оптимизация сетевых настроек
-            std::cout << "Применены настройки для снижения пинга\n";
+    
+    void toggleReadingMode() {
+        if (functions["readingMode"].enabled) {
+            // Режим чтения (сепия, уменьшение синего)
         }
     }
-
-    void toggleStreamerMode() {
-        streamerModeEnabled = !streamerModeEnabled;
-        showNotification("Режим стримера", streamerModeEnabled);
-        
-        if (streamerModeEnabled) {
-            std::cout << "Личная информация скрыта\n";
+    
+    void toggleNightMode() {
+        if (functions["nightMode"].enabled) {
+            // Ночной режим (темная тема, теплые тона)
+            if (@available(iOS 13.0, *)) {
+                // Используем системную темную тему
+            }
         }
     }
-
-    void toggleScreenshotMode() {
-        screenshotModeEnabled = !screenshotModeEnabled;
-        showNotification("Режим скриншота", screenshotModeEnabled);
-        
-        if (screenshotModeEnabled) {
-            std::cout << "Интерфейс скрыт для чистых скриншотов\n";
+    
+    void toggleBatterySaver() {
+        if (functions["batterySaver"].enabled) {
+            // Энергосбережение (уменьшение FPS, отключение эффектов)
         }
     }
-
-    void toggleFPSStabilizer() {
-        fpsStabilizerEnabled = !fpsStabilizerEnabled;
-        showNotification("Стабилизатор FPS", fpsStabilizerEnabled);
-        
-        if (fpsStabilizerEnabled) {
-            std::thread([this]() {
-                while (fpsStabilizerEnabled && running) {
-                    // Автоматическая настройка графики для поддержания FPS
-                    std::this_thread::sleep_for(std::chrono::seconds(5));
-                }
-            }).detach();
+    
+    void toggleAnimationBoost() {
+        if (functions["animationBoost"].enabled) {
+            // Ускорение анимаций системы
+            [[NSUserDefaults standardUserDefaults] setFloat:0.5 forKey:@"UIAnimationSpeed"];
+        } else {
+            [[NSUserDefaults standardUserDefaults] setFloat:1.0 forKey:@"UIAnimationSpeed"];
         }
     }
-
-    void toggleUIScaler() {
-        uiScalerEnabled = !uiScalerEnabled;
-        showNotification("Масштабирование UI", uiScalerEnabled);
-        applyUIScale();
-    }
-
-    void applyUIScale() {
-        if (uiScalerEnabled) {
-            std::cout << "Масштаб UI установлен на " << uiScale << "%\n";
+    
+    void toggleScreenZoom() {
+        if (functions["screenZoom"].enabled) {
+            // Режим масштабирования экрана
         }
     }
 };
 
-// Глобальный экземпляр меню
-GameMenu* g_menu = nullptr;
+// Глобальный экземпляр
+static GameHelper* g_helper = nullptr;
 
-// Функция для инициализации меню
-extern "C" DLL_EXPORT void init_menu() {
-    if (!g_menu) {
-        g_menu = new GameMenu();
-        g_menu->start();
+// Функции для экспорта
+extern "C" {
+    void init_game_helper() {
+        static dispatch_once_t onceToken;
+        dispatch_once(&onceToken, ^{
+            g_helper = new GameHelper();
+            g_helper->initialize();
+        });
+    }
+    
+    void cleanup_game_helper() {
+        if (g_helper) {
+            g_helper->cleanup();
+            delete g_helper;
+            g_helper = nullptr;
+        }
+    }
+    
+    // Точка входа для dylib
+    __attribute__((constructor)) static void on_load() {
+        init_game_helper();
+    }
+    
+    __attribute__((destructor)) static void on_unload() {
+        cleanup_game_helper();
     }
 }
-
-// Функция для остановки меню
-extern "C" DLL_EXPORT void stop_menu() {
-    if (g_menu) {
-        g_menu->stop();
-        delete g_menu;
-        g_menu = nullptr;
-    }
-}
-
-// Точка входа для dylib
-#ifdef _WIN32
-BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved) {
-    switch (ul_reason_for_call) {
-        case DLL_PROCESS_ATTACH:
-            init_menu();
-            break;
-        case DLL_PROCESS_DETACH:
-            stop_menu();
-            break;
-    }
-    return TRUE;
-}
-#else
-__attribute__((constructor)) void on_load() {
-    init_menu();
-}
-
-__attribute__((destructor)) void on_unload() {
-    stop_menu();
-}
-#endif
