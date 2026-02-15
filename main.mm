@@ -11,7 +11,7 @@
 struct FunctionState {
     bool enabled;
     std::string name;
-    dispatch_block_t toggleBlock; // Используем dispatch_block_t
+    dispatch_block_t toggleBlock;
 };
 
 // Интерфейс контроллера
@@ -79,7 +79,6 @@ struct FunctionState {
 }
 
 - (void)registerFunctions {
-    // Используем __block и weak ссылку через self
     __block GameHelperController *blockSelf = self;
     
     // 1. Автокликер
@@ -160,10 +159,15 @@ struct FunctionState {
         [self createUI];
     });
     
-    // Запускаем поток уведомлений
+    // Запускаем поток уведомлений с weak self
     _notificationRunning = true;
-    _notificationThread = std::thread([this]() {
-        [self notificationLoop];
+    
+    __weak GameHelperController *weakSelf = self;
+    _notificationThread = std::thread([weakSelf]() {
+        // Проверяем, что объект еще жив
+        if (weakSelf) {
+            [weakSelf notificationLoop];
+        }
     });
 }
 
@@ -583,12 +587,13 @@ struct FunctionState {
 // MARK: - Function Implementations
 - (void)toggleAutoClicker {
     if (_functions["autoClicker"].enabled) {
-        // Используем [self] вместо weakSelf для простоты
-        std::thread([self]() {
-            while (self && self->_functions["autoClicker"].enabled) {
-                // Симуляция клика
+        __weak GameHelperController *weakSelf = self;
+        
+        std::thread([weakSelf]() {
+            while (weakSelf && weakSelf->_functions["autoClicker"].enabled) {
                 dispatch_async(dispatch_get_main_queue(), ^{
-                    // Здесь можно эмулировать нажатие
+                    // Эмуляция клика
+                    // Можно добавить визуальный эффект или звук
                 });
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
             }
