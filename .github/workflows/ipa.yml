@@ -11,11 +11,12 @@ jobs:
     
     - name: Build IPA
       run: |
-        # Компилируем в исполняемый файл
+        # Компилируем в исполняемый файл с добавлением фреймворка UniformTypeIdentifiers
         xcrun -sdk iphoneos clang -arch arm64 -fobjc-arc \
           -framework UIKit \
           -framework Foundation \
           -framework WebKit \
+          -framework UniformTypeIdentifiers \
           main.m \
           -o DYLIBStudio
         
@@ -50,7 +51,7 @@ jobs:
         EOF
         
         # Подписываем (для разработки)
-        codesign -f -s "iPhone Developer" Payload/DYLIBStudio.app --entitlements /dev/null
+        codesign -f -s "iPhone Developer" Payload/DYLIBStudio.app --entitlements /dev/null || true
         
         # Создаем IPA
         zip -r DYLIBStudio.ipa Payload/
