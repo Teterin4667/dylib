@@ -1,6 +1,20 @@
-#include <objc/runtime.h>
-#include <UIKit/UIKit.h>
-#include <WebKit/WebKit.h>
+#import <objc/runtime.h>
+#import <UIKit/UIKit.h>
+#import <WebKit/WebKit.h>
+#import <mach/mach.h>
+#import <mach-o/dyld.h>
+
+// Добавляем объявление функции vm_region_64 если не импортируется
+extern kern_return_t vm_region_64
+(
+    task_t target_task,
+    vm_address_t *address,
+    vm_size_t *size,
+    vm_region_flavor_t flavor,
+    vm_region_info_t info,
+    mach_msg_type_number_t *infoCnt,
+    mach_port_t *object_name
+);
 
 @interface Script : NSObject
 @property (nonatomic, strong) NSString *name;
@@ -22,7 +36,7 @@
 // Toolbox
 @property (nonatomic, strong) UITableView *scriptsTableView;
 @property (nonatomic, strong) NSMutableArray<Script *> *scripts;
-@property (nonatomic, strong) UIButton *newScriptButton;
+@property (nonatomic, strong) UIButton *btnNewScript;  // Переименовано с newScriptButton
 @property (nonatomic, strong) UIButton *importScriptButton;
 
 // Editor
@@ -36,7 +50,7 @@
 
 // Build
 @property (nonatomic, strong) UITextView *yamlOutput;
-@property (nonatomic, strong) UIButton *copyYamlButton;
+@property (nonatomic, strong) UIButton *btnCopyYaml;  // Переименовано с copyYamlButton
 @property (nonatomic, strong) UIButton *pushToGitButton;
 @property (nonatomic, strong) UITextField *repoField;
 @property (nonatomic, strong) UITextField *tokenField;
@@ -119,14 +133,14 @@
     [_toolboxView addSubview:title];
     
     // Кнопки управления
-    _newScriptButton = [UIButton buttonWithType:UIButtonTypeSystem];
-    _newScriptButton.frame = CGRectMake(_toolboxView.frame.size.width-120, 10, 50, 30);
-    [_newScriptButton setTitle:@"➕" forState:UIControlStateNormal];
-    [_newScriptButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    _newScriptButton.backgroundColor = [UIColor colorWithRed:0.2 green:0.6 blue:0.2 alpha:1.0];
-    _newScriptButton.layer.cornerRadius = 5;
-    [_newScriptButton addTarget:self action:@selector(newScript) forControlEvents:UIControlEventTouchUpInside];
-    [_toolboxView addSubview:_newScriptButton];
+    _btnNewScript = [UIButton buttonWithType:UIButtonTypeSystem];
+    _btnNewScript.frame = CGRectMake(_toolboxView.frame.size.width-120, 10, 50, 30);
+    [_btnNewScript setTitle:@"➕" forState:UIControlStateNormal];
+    [_btnNewScript setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    _btnNewScript.backgroundColor = [UIColor colorWithRed:0.2 green:0.6 blue:0.2 alpha:1.0];
+    _btnNewScript.layer.cornerRadius = 5;
+    [_btnNewScript addTarget:self action:@selector(newScript) forControlEvents:UIControlEventTouchUpInside];
+    [_toolboxView addSubview:_btnNewScript];
     
     _importScriptButton = [UIButton buttonWithType:UIButtonTypeSystem];
     _importScriptButton.frame = CGRectMake(_toolboxView.frame.size.width-60, 10, 50, 30);
@@ -335,15 +349,15 @@
     [_buildView addSubview:_yamlOutput];
     
     // Кнопки
-    _copyYamlButton = [UIButton buttonWithType:UIButtonTypeSystem];
-    _copyYamlButton.frame = CGRectMake(15, _buildView.frame.size.height-60, 100, 35);
-    [_copyYamlButton setTitle:@"📋 Copy YAML" forState:UIControlStateNormal];
-    [_copyYamlButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    _copyYamlButton.backgroundColor = [UIColor colorWithRed:0.3 green:0.3 blue:0.6 alpha:1.0];
-    _copyYamlButton.layer.cornerRadius = 5;
-    _copyYamlButton.titleLabel.font = [UIFont boldSystemFontOfSize:12];
-    [_copyYamlButton addTarget:self action:@selector(copyYAML) forControlEvents:UIControlEventTouchUpInside];
-    [_buildView addSubview:_copyYamlButton];
+    _btnCopyYaml = [UIButton buttonWithType:UIButtonTypeSystem];
+    _btnCopyYaml.frame = CGRectMake(15, _buildView.frame.size.height-60, 100, 35);
+    [_btnCopyYaml setTitle:@"📋 Copy YAML" forState:UIControlStateNormal];
+    [_btnCopyYaml setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    _btnCopyYaml.backgroundColor = [UIColor colorWithRed:0.3 green:0.3 blue:0.6 alpha:1.0];
+    _btnCopyYaml.layer.cornerRadius = 5;
+    _btnCopyYaml.titleLabel.font = [UIFont boldSystemFontOfSize:12];
+    [_btnCopyYaml addTarget:self action:@selector(copyYAML) forControlEvents:UIControlEventTouchUpInside];
+    [_buildView addSubview:_btnCopyYaml];
     
     _pushToGitButton = [UIButton buttonWithType:UIButtonTypeSystem];
     _pushToGitButton.frame = CGRectMake(_buildView.frame.size.width-115, _buildView.frame.size.height-60, 100, 35);
@@ -473,18 +487,15 @@
     NSString *scriptName = _scriptNameField.text.length > 0 ? _scriptNameField.text : @"script.m";
     NSString *dylibName = [scriptName stringByReplacingOccurrencesOfString:@".m" withString:@".dylib"];
     
+    // Разбиваем строку чтобы избежать предупреждения
     NSString *yaml = [NSString stringWithFormat:
-        @"name: Compile %%@\n"
-        @"\n"
+        @"name: Compile %%@" "\n"
         @"on: [push]\n"
-        @"\n"
         @"jobs:\n"
         @"  build:\n"
         @"    runs-on: macos-latest\n"
-        @"    \n"
         @"    steps:\n"
         @"    - uses: actions/checkout@v4\n"
-        @"    \n"
         @"    - name: Compile with Xcode\n"
         @"      run: |\n"
         @"        xcrun -sdk iphoneos clang -arch arm64 -fobjc-arc -dynamiclib \\\n"
@@ -494,12 +505,12 @@
         @"          -isysroot $(xcrun -sdk iphoneos --show-sdk-path) \\\n"
         @"          %%@ \\\n"
         @"          -o %%@\n"
-        @"    \n"
         @"    - name: Upload dylib\n"
         @"      uses: actions/upload-artifact@v4\n"
         @"      with:\n"
         @"        name: %%@\n"
-        @"        path: %%@", scriptName, dylibName, dylibName, dylibName];
+        @"        path: %%@",
+        scriptName, dylibName, dylibName, dylibName];
     
     _yamlOutput.text = yaml;
 }
@@ -538,7 +549,7 @@
                 @"📝 Ready to compile real dylib!", 
                 [UIDevice currentDevice].name,
                 [UIDevice currentDevice].systemVersion,
-                (int)[self getMemoryRegionCount]];
+                [self getMemoryRegionCount]];
             
             _testOutput.text = [_testOutput.text stringByAppendingString:testResult];
         });
@@ -553,9 +564,11 @@
     mach_msg_type_number_t count_info = VM_REGION_BASIC_INFO_COUNT_64;
     mach_port_t object_name;
     
-    while (vm_region_64(mach_task_self(), &address, &size, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&info, &count_info, &object_name) == KERN_SUCCESS) {
+    kern_return_t kr = vm_region_64(mach_task_self(), &address, &size, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&info, &count_info, &object_name);
+    while (kr == KERN_SUCCESS) {
         count++;
         address += size;
+        kr = vm_region_64(mach_task_self(), &address, &size, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&info, &count_info, &object_name);
     }
     
     return count;
@@ -653,7 +666,9 @@
 }
 
 - (void)importScript {
-    UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc] initWithDocumentTypes:@[@"public.text"] inMode:UIDocumentPickerModeImport];
+    // Используем новый API для iOS 14+
+    NSArray *contentTypes = @[UTTypePlainText];
+    UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:contentTypes asCopy:YES];
     picker.delegate = self;
     [self presentViewController:picker animated:YES completion:nil];
 }
