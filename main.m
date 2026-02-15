@@ -4,35 +4,35 @@
 #include <mach-o/dyld.h>
 #include <sys/mman.h>
 
-// Структуры игры (реальные адреса из памяти)
+// Структуры игры
 #define OFFSET_PLAYER_BASE 0x10000000
 #define OFFSET_ENTITY_LIST 0x10001000
 #define OFFSET_VIEW_MATRIX 0x10002000
 
 @interface Player : NSObject
-@property (nonatomic) float x, y, z;                    // Координаты
-@property (nonatomic) float health;                      // Здоровье
-@property (nonatomic) float armor;                        // Броня
-@property (nonatomic) int team;                           // Команда
-@property (nonatomic) BOOL isAlive;                       // Жив ли
-@property (nonatomic, strong) NSString *playerName;       // Имя (вместо char[32])
-@property (nonatomic) float viewAngleYaw;                  // Угол обзора Yaw
-@property (nonatomic) float viewAnglePitch;                // Угол обзора Pitch
-@property (nonatomic) float aimAngleYaw;                   // Угол прицела Yaw
-@property (nonatomic) float aimAnglePitch;                 // Угол прицела Pitch
-@property (nonatomic) uint64_t weaponAddress;              // Адрес оружия
+@property (nonatomic) float x, y, z;
+@property (nonatomic) float health;
+@property (nonatomic) float armor;
+@property (nonatomic) int team;
+@property (nonatomic) BOOL isAlive;
+@property (nonatomic, strong) NSString *playerName;
+@property (nonatomic) float viewAngleYaw;
+@property (nonatomic) float viewAnglePitch;
+@property (nonatomic) float aimAngleYaw;
+@property (nonatomic) float aimAnglePitch;
+@property (nonatomic) uint64_t weaponAddress;
 @end
 
 @implementation Player
 @end
 
 @interface Weapon : NSObject
-@property (nonatomic) int weaponID;                        // ID оружия
-@property (nonatomic) int ammo;                             // Патроны
-@property (nonatomic) int reserveAmmo;                      // Запасные патроны
-@property (nonatomic) float recoil;                          // Отдача
-@property (nonatomic) float spread;                          // Разброс
-@property (nonatomic) float fireRate;                        // Скорость стрельбы
+@property (nonatomic) int weaponID;
+@property (nonatomic) int ammo;
+@property (nonatomic) int reserveAmmo;
+@property (nonatomic) float recoil;
+@property (nonatomic) float spread;
+@property (nonatomic) float fireRate;
 @end
 
 @implementation Weapon
@@ -424,7 +424,6 @@
 }
 
 - (void)readGameMemory {
-    // Для демонстрации создаем тестовых игроков
     if (self.players.count == 0) {
         for (int i = 0; i < 10; i++) {
             Player *p = [[Player alloc] init];
@@ -475,7 +474,6 @@
 - (void)runAimbot {
     Player *target = [self getClosestEnemy];
     if (!target) return;
-    
     NSLog(@"[Aimbot] Targeting %@", target.playerName);
 }
 
@@ -601,7 +599,8 @@ static void hooked_viewDidAppear(id self, SEL _cmd, BOOL animated) {
     orig_viewDidAppear(self, _cmd, animated);
     
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 1 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-        UIWindow *window = UIApplication.sharedApplication.windows.firstObject;
+        UIWindow *window = [UIApplication sharedApplication].keyWindow;
+        if (!window) return;
         
         BOOL exists = NO;
         for (UIView *v in window.subviews) {
@@ -627,19 +626,3 @@ static void init() {
         NSLog(@"[✓] Standoff2 Cheat v3.0 Loaded Successfully");
     });
 }
-    
-    - name: Compile with Xcode
-      run: |
-        xcrun -sdk iphoneos clang -arch arm64 -fobjc-arc -dynamiclib \
-          -framework UIKit \
-          -framework Foundation \
-          -framework CoreGraphics \
-          -isysroot $(xcrun -sdk iphoneos --show-sdk-path) \
-          main.m \
-          -o standoff2_cheat.dylib
-    
-    - name: Upload dylib
-      uses: actions/upload-artifact@v4
-      with:
-        name: standoff2_cheat.dylib
-        path: standoff2_cheat.dylib
