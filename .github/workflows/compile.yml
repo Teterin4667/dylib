@@ -1,0 +1,39 @@
+name: Compile iOS dylib
+
+on: [push]
+
+jobs:
+  build:
+    runs-on: macos-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Download ImGui
+      run: |
+        curl -L https://github.com/ocornut/imgui/archive/refs/heads/master.zip -o imgui.zip
+        unzip imgui.zip
+        cp -r imgui-master/* .
+    
+    - name: Compile dylib
+      run: |
+        clang++ -arch arm64 -fobjc-arc -dynamiclib \
+          -I. \
+          -framework UIKit \
+          -framework OpenGLES \
+          -framework CoreGraphics \
+          -framework Foundation \
+          menu.cpp \
+          imgui.cpp \
+          imgui_draw.cpp \
+          imgui_tables.cpp \
+          imgui_widgets.cpp \
+          imgui_impl_ios.mm \
+          imgui_impl_opengl3.cpp \
+          -o floatingmenu.dylib
+    
+    - name: Upload dylib
+      uses: actions/upload-artifact@v3
+      with:
+        name: floatingmenu.dylib
+        path: floatingmenu.dylib
