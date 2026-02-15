@@ -1,4 +1,4 @@
-name: Compile Standoff2 Cheat
+name: Compile iOS dylib
 
 on: [push]
 
@@ -9,113 +9,185 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     
-    - name: Create main.cpp
+    - name: Create menu.m
       run: |
-        cat > main.cpp << 'EOF'
+        cat > menu.m << 'EOF'
         #include <objc/runtime.h>
         #include <UIKit/UIKit.h>
-        #include <OpenGLES/ES2/gl.h>
         
-        // Состояние меню
-        static bool g_menu_visible = true;
-        static int g_current_tab = 0;
+        @interface FloatingMenu : UIView
+        @property (nonatomic, strong) UIButton *button;
+        @property (nonatomic, strong) UILabel *label;
+        @property (nonatomic, assign) CGPoint touchOffset;
+        @end
         
-        // Состояния чита
-        static bool aimbot = false;
-        static bool wallhack = false;
-        static bool esp = false;
-        static bool norecoil = false;
-        static float aim_fov = 60.0f;
-        static int aim_bone = 1;
+        @implementation FloatingMenu
         
-        static void (*orig_drawRect)(id, SEL, CGRect);
-        
-        // Простая отрисовка прямоугольника
-        void DrawRect(float x, float y, float w, float h, float r, float g, float b, float a) {
-            glEnable(GL_BLEND);
-            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-            glColor4f(r, g, b, a);
-            
-            GLfloat vertices[] = {
-                x, y,
-                x+w, y,
-                x+w, y+h,
-                x, y+h
-            };
-            
-            glVertexPointer(2, GL_FLOAT, 0, vertices);
-            glEnableClientState(GL_VERTEX_ARRAY);
-            glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
-            glDisableClientState(GL_VERTEX_ARRAY);
-        }
-        
-        // Простая отрисовка текста
-        void DrawText(float x, float y, const char* text, float r, float g, float b) {
-            // Заглушка - в реальном проекте нужен шрифт
-        }
-        
-        static void hooked_drawRect(id self, SEL _cmd, CGRect rect) {
-            orig_drawRect(self, _cmd, rect);
-            
-            if (g_menu_visible) {
-                [EAGLContext setCurrentContext:[(CAEAGLLayer*)[self layer] context]];
+        - (instancetype)initWithFrame:(CGRect)frame {
+            self = [super initWithFrame:frame];
+            if (self) {
+                self.backgroundColor = [UIColor colorWithRed:0.2 green:0.5 blue:0.9 alpha:0.9];
+                self.layer.cornerRadius = 10;
+                self.layer.borderWidth = 2;
+                self.layer.borderColor = [UIColor whiteColor].CGColor;
                 
-                float mx = 100, my = 100;
-                float mw = 400, mh = 300;
-                
-                // Фон меню
-                DrawRect(mx, my, mw, mh, 0.15f, 0.15f, 0.15f, 0.9f);
-                DrawRect(mx, my, mw, 30, 0.3f, 0.4f, 0.9f, 0.9f);
+                UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(10, 5, 100, 20)];
+                title.text = @"Standoff2 Cheat";
+                title.textColor = [UIColor whiteColor];
+                title.font = [UIFont boldSystemFontOfSize:14];
+                [self addSubview:title];
                 
                 // Вкладки
-                float tab_w = mw / 4;
-                const char* tabs[] = {"AIM", "VIS", "MISC", "SET"};
-                
+                NSArray *tabs = @[@"AIM", @"VIS", @"MISC", @"SET"];
                 for (int i = 0; i < 4; i++) {
-                    float tx = mx + i * tab_w;
-                    if (g_current_tab == i) {
-                        DrawRect(tx, my + 30, tab_w, 30, 0.4f, 0.5f, 1.0f, 0.9f);
+                    UIButton *tabBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+                    tabBtn.frame = CGRectMake(10 + i*45, 30, 40, 25);
+                    [tabBtn setTitle:tabs[i] forState:UIControlStateNormal];
+                    tabBtn.backgroundColor = [UIColor colorWithWhite:0.3 alpha:0.8];
+                    tabBtn.tag = i;
+                    [tabBtn addTarget:self action:@selector(tabClicked:) forControlEvents:UIControlEventTouchUpInside];
+                    [self addSubview:tabBtn];
+                }
+                
+                // Чекбоксы
+                _label = [[UILabel alloc] initWithFrame:CGRectMake(10, 60, 150, 20)];
+                _label.text = @"Aimbot: OFF";
+                _label.textColor = [UIColor whiteColor];
+                _label.font = [UIFont systemFontOfSize:12];
+                [self addSubview:_label];
+                
+                _button = [UIButton buttonWithType:UIButtonTypeSystem];
+                _button.frame = CGRectMake(120, 60, 50, 20);
+                [_button setTitle:@"Toggle" forState:UIControlStateNormal];
+                _button.backgroundColor = [UIColor whiteColor];
+                _button.titleLabel.font = [UIFont systemFontOfSize:10];
+                [_button addTarget:self action:@selector(toggleAimbot) forControlEvents:UIControlEventTouchUpInside];
+                [self addSubview:_button];
+                
+                // Счетчик (для демо)
+                UILabel *counterLabel = [[UILabel alloc] initWithFrame:CGRectMake(10, 85, 150, 20)];
+                counterLabel.text = @"Kills: 0";
+                counterLabel.textColor = [UIColor whiteColor];
+                counterLabel.font = [UIFont systemFontOfSize:12];
+                counterLabel.tag = 100;
+                [self addSubview:counterLabel];
+                
+                UIButton *addKill = [UIButton buttonWithType:UIButtonTypeSystem];
+                addKill.frame = CGRectMake(120, 85, 50, 20);
+                [addKill setTitle:@"+1" forState:UIControlStateNormal];
+                addKill.backgroundColor = [UIColor whiteColor];
+                addKill.titleLabel.font = [UIFont systemFontOfSize:10];
+                [addKill addTarget:self action:@selector(addKill) forControlEvents:UIControlEventTouchUpInside];
+                [self addSubview:addKill];
+                
+                UIButton *closeBtn = [UIButton buttonWithType:UIButtonTypeCustom];
+                closeBtn.frame = CGRectMake(150, 5, 25, 20);
+                [closeBtn setTitle:@"✕" forState:UIControlStateNormal];
+                [closeBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+                closeBtn.titleLabel.font = [UIFont boldSystemFontOfSize:16];
+                [closeBtn addTarget:self action:@selector(close) forControlEvents:UIControlEventTouchUpInside];
+                [self addSubview:closeBtn];
+            }
+            return self;
+        }
+        
+        - (void)tabClicked:(UIButton *)sender {
+            // Подсветка выбранной вкладки
+            for (UIView *view in self.subviews) {
+                if ([view isKindOfClass:[UIButton class]] && view.frame.size.width == 40) {
+                    if (view.tag == sender.tag) {
+                        view.backgroundColor = [UIColor colorWithRed:0.4 green:0.6 blue:1.0 alpha:0.8];
                     } else {
-                        DrawRect(tx, my + 30, tab_w, 30, 0.2f, 0.2f, 0.3f, 0.9f);
+                        view.backgroundColor = [UIColor colorWithWhite:0.3 alpha:0.8];
+                    }
+                }
+            }
+            
+            // Меняем содержимое в зависимости от вкладки
+            UILabel *label = (UILabel *)[self viewWithTag:100];
+            if (sender.tag == 0) label.text = @"Aimbot: ON";
+            else if (sender.tag == 1) label.text = @"Wallhack: OFF";
+            else if (sender.tag == 2) label.text = @"Speed: 1.0x";
+            else if (sender.tag == 3) label.text = @"Settings";
+        }
+        
+        - (void)toggleAimbot {
+            static BOOL aimbotOn = NO;
+            aimbotOn = !aimbotOn;
+            self.label.text = aimbotOn ? @"Aimbot: ON" : @"Aimbot: OFF";
+        }
+        
+        - (void)addKill {
+            UILabel *counter = (UILabel *)[self viewWithTag:100];
+            int kills = [counter.text componentsSeparatedByString:@" "].lastObject.intValue;
+            kills++;
+            counter.text = [NSString stringWithFormat:@"Kills: %d", kills];
+        }
+        
+        - (void)close {
+            [self removeFromSuperview];
+        }
+        
+        - (void)touchesBegan:(NSSet *)touches withEvent:(UIEvent *)event {
+            UITouch *touch = [touches anyObject];
+            CGPoint point = [touch locationInView:self.superview];
+            self.touchOffset = CGPointMake(point.x - self.frame.origin.x, point.y - self.frame.origin.y);
+        }
+        
+        - (void)touchesMoved:(NSSet *)touches withEvent:(UIEvent *)event {
+            UITouch *touch = [touches anyObject];
+            CGPoint point = [touch locationInView:self.superview];
+            self.frame = CGRectMake(point.x - self.touchOffset.x, point.y - self.touchOffset.y, 
+                                   self.frame.size.width, self.frame.size.height);
+        }
+        
+        @end
+        
+        static void (*orig_viewDidAppear)(id, SEL, BOOL);
+        
+        static void hooked_viewDidAppear(id self, SEL _cmd, BOOL animated) {
+            orig_viewDidAppear(self, _cmd, animated);
+            
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 1 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+                UIWindow *window = [UIApplication sharedApplication].keyWindow;
+                
+                BOOL exists = NO;
+                for (UIView *v in window.subviews) {
+                    if ([v isKindOfClass:[FloatingMenu class]]) {
+                        exists = YES;
+                        break;
                     }
                 }
                 
-                // Кнопка закрытия
-                DrawRect(mx + mw - 25, my + 5, 20, 20, 0.8f, 0.2f, 0.2f, 0.9f);
-            }
+                if (!exists) {
+                    FloatingMenu *menu = [[FloatingMenu alloc] initWithFrame:CGRectMake(50, 100, 180, 120)];
+                    [window addSubview:menu];
+                }
+            });
         }
         
         __attribute__((constructor))
         static void init() {
             dispatch_async(dispatch_get_main_queue(), ^{
-                UIWindow *window = [UIApplication sharedApplication].keyWindow;
-                UIView *view = window.rootViewController.view;
-                
-                if (!view) return;
-                
-                Class class = [view class];
-                Method method = class_getInstanceMethod(class, @selector(drawRect:));
-                orig_drawRect = (void *)method_setImplementation(method, (IMP)hooked_drawRect);
-                
+                Class class = [UIViewController class];
+                Method original = class_getInstanceMethod(class, @selector(viewDidAppear:));
+                orig_viewDidAppear = (void *)method_setImplementation(original, (IMP)hooked_viewDidAppear);
                 NSLog(@"[✓] Standoff2 Cheat Loaded");
             });
         }
         EOF
     
-    - name: Compile dylib
+    - name: Compile with Xcode
       run: |
-        xcrun -sdk iphoneos clang++ -arch arm64 -fobjc-arc -dynamiclib \
-          -isysroot $(xcrun -sdk iphoneos --show-sdk-path) \
+        xcrun -sdk iphoneos clang -arch arm64 -fobjc-arc -dynamiclib \
           -framework UIKit \
-          -framework OpenGLES \
-          -framework CoreGraphics \
           -framework Foundation \
-          -framework QuartzCore \
-          -x objective-c++ \
-          main.cpp \
+          -framework CoreGraphics \
+          -isysroot $(xcrun -sdk iphoneos --show-sdk-path) \
+          menu.m \
           -o standoff2_cheat.dylib
     
-    - name: Upload artifact
+    - name: Upload dylib
       uses: actions/upload-artifact@v4
       with:
         name: standoff2_cheat.dylib
