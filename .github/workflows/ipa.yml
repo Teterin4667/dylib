@@ -1,0 +1,62 @@
+name: Build IPA
+
+on: [push]
+
+jobs:
+  build:
+    runs-on: macos-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Build IPA
+      run: |
+        # Компилируем в исполняемый файл
+        xcrun -sdk iphoneos clang -arch arm64 -fobjc-arc \
+          -framework UIKit \
+          -framework Foundation \
+          -framework WebKit \
+          main.m \
+          -o DYLIBStudio
+        
+        # Создаем структуру IPA
+        mkdir -p Payload/DYLIBStudio.app
+        cp DYLIBStudio Payload/DYLIBStudio.app/
+        
+        # Создаем Info.plist
+        cat > Payload/DYLIBStudio.app/Info.plist << EOF
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict>
+            <key>CFBundleExecutable</key>
+            <string>DYLIBStudio</string>
+            <key>CFBundleIdentifier</key>
+            <string>com.dylib.studio</string>
+            <key>CFBundleName</key>
+            <string>DYLIBStudio</string>
+            <key>CFBundleVersion</key>
+            <string>1.0</string>
+            <key>CFBundleShortVersionString</key>
+            <string>1.0</string>
+            <key>LSRequiresIPhoneOS</key>
+            <true/>
+            <key>UIRequiredDeviceCapabilities</key>
+            <array>
+                <string>arm64</string>
+            </array>
+        </dict>
+        </plist>
+        EOF
+        
+        # Подписываем (для разработки)
+        codesign -f -s "iPhone Developer" Payload/DYLIBStudio.app --entitlements /dev/null
+        
+        # Создаем IPA
+        zip -r DYLIBStudio.ipa Payload/
+    
+    - name: Upload IPA
+      uses: actions/upload-artifact@v4
+      with:
+        name: DYLIBStudio.ipa
+        path: DYLIBStudio.ipa
