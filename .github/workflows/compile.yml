@@ -13,26 +13,83 @@ jobs:
       run: |
         curl -L https://github.com/ocornut/imgui/archive/refs/heads/master.zip -o imgui.zip
         unzip imgui.zip
-        cp -r imgui-master/* .
-        cp imgui-master/backends/imgui_impl_ios* .
+        cp imgui-master/*.cpp .
+        cp imgui-master/*.h .
         cp imgui-master/backends/imgui_impl_opengl3* .
+        cp imgui-master/backends/imgui_impl_osx* .
+        cp imgui-master/backends/imgui_impl_metal* .
+    
+    - name: Create menu.cpp
+      run: |
+        cat > menu.cpp << 'EOF'
+#include "imgui.h"
+#include "imgui_impl_osx.h"
+#include "imgui_impl_opengl3.h"
+#include <objc/runtime.h>
+#include <UIKit/UIKit.h>
+#include <OpenGLES/ES2/gl.h>
+
+static bool g_menu_visible = true;
+static float f = 0.0f;
+static int counter = 0;
+
+@interface ImGuiView : UIView @end
+
+@implementation ImGuiView
+- (void)drawRect:(CGRect)rect {
+    [super drawRect:rect];
+    
+    if (g_menu_visible) {
+        [EAGLContext setCurrentContext:[(CAEAGLLayer*)self.layer context]];
+        
+        ImGui_ImplOpenGL3_NewFrame();
+        ImGui_ImplOSX_NewFrame(self);
+        ImGui::NewFrame();
+        
+        ImGui::Begin("Floating Menu", &g_menu_visible);
+        ImGui::Text("Counter: %d", counter);
+        if (ImGui::Button("Click")) counter++;
+        ImGui::SliderFloat("float", &f, 0.0f, 1.0f);
+        ImGui::End();
+        
+        ImGui::Render();
+        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+    }
+}
+@end
+
+__attribute__((constructor))
+static void init() {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIWindow *window = [UIApplication sharedApplication].keyWindow;
+        UIView *view = window.rootViewController.view;
+        
+        IMGUI_CHECKVERSION();
+        ImGui::CreateContext();
+        ImGui_ImplOSX_Init((__bridge void*)view);
+        ImGui_ImplOpenGL3_Init("#version 100");
+        
+        object_setClass(view, [ImGuiView class]);
+    });
+}
+EOF
     
     - name: Compile dylib
       run: |
         clang++ -arch arm64 -fobjc-arc -dynamiclib \
-          -I. \
           -framework UIKit \
           -framework OpenGLES \
           -framework CoreGraphics \
           -framework Foundation \
           -framework QuartzCore \
+          -x objective-c++ \
           menu.cpp \
           imgui.cpp \
           imgui_draw.cpp \
           imgui_tables.cpp \
           imgui_widgets.cpp \
-          imgui_impl_ios.mm \
           imgui_impl_opengl3.cpp \
+          imgui_impl_osx.mm \
           -o floatingmenu.dylib
     
     - name: Upload dylib
