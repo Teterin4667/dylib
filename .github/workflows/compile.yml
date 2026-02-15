@@ -9,22 +9,13 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     
-    - name: Download ImGui
+    - name: Create main.cpp
       run: |
-        curl -L https://github.com/ocornut/imgui/archive/refs/heads/master.zip -o imgui.zip
-        unzip imgui.zip
-        cp imgui-master/*.cpp .
-        cp imgui-master/*.h .
-        cp imgui-master/backends/imgui_impl_opengl3* .
-        cp imgui-master/backends/imgui_impl_ios* .
-    
-    - name: Create menu.cpp
-      run: |
-        cat > menu.cpp << 'EOF'
-        // Вставь сюда код из menu.cpp выше
+        cat > main.cpp << 'EOF'
+        // Вставь сюда весь код из main.cpp выше
         EOF
     
-    - name: Compile
+    - name: Compile dylib
       run: |
         xcrun -sdk iphoneos clang++ -arch arm64 -fobjc-arc -dynamiclib \
           -isysroot $(xcrun -sdk iphoneos --show-sdk-path) \
@@ -33,16 +24,11 @@ jobs:
           -framework CoreGraphics \
           -framework Foundation \
           -framework QuartzCore \
-          menu.cpp \
-          imgui.cpp \
-          imgui_draw.cpp \
-          imgui_tables.cpp \
-          imgui_widgets.cpp \
-          imgui_impl_opengl3.cpp \
-          imgui_impl_ios.mm \
+          -x objective-c++ \
+          main.cpp \
           -o standoff2_cheat.dylib
     
-    - name: Upload
+    - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
         name: standoff2_cheat.dylib
