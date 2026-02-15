@@ -13,7 +13,7 @@
 struct FunctionState {
     bool enabled;
     std::string name;
-    std::function<void()> toggleCallback;
+    void (^toggleBlock)(void); // Используем Objective-C блок вместо C++ лямбды
 };
 
 // Интерфейс контроллера
@@ -49,6 +49,20 @@ struct FunctionState {
 - (void)handlePinchGesture:(UIPinchGestureRecognizer *)gesture;
 - (void)resetStretch;
 
+// Функции для каждой опции
+- (void)toggleAutoClicker;
+- (void)toggleFPSUnlock;
+- (void)togglePotatoGraphics;
+- (void)toggleFPSCounter;
+- (void)toggleBrightness;
+- (void)toggleReadingMode;
+- (void)toggleNightMode;
+- (void)toggleBatterySaver;
+- (void)toggleAnimationBoost;
+- (void)toggleScreenZoom;
+- (void)toggleScreenStretch;
+- (void)toggleWidescreenMode;
+
 @end
 
 @implementation GameHelperController
@@ -67,76 +81,78 @@ struct FunctionState {
 }
 
 - (void)registerFunctions {
+    __weak typeof(self) weakSelf = self;
+    
     // 1. Автокликер
     _functions["autoClicker"] = {
         false, "Автокликер",
-        [this]() { [self toggleAutoClicker]; }
+        ^{ [weakSelf toggleAutoClicker]; }
     };
     
     // 2. Разблокировка FPS
     _functions["fpsUnlock"] = {
         false, "Разблокировка FPS",
-        [this]() { [self toggleFPSUnlock]; }
+        ^{ [weakSelf toggleFPSUnlock]; }
     };
     
     // 3. Картофельная графика
     _functions["potatoGraphics"] = {
         false, "Картофельная графика",
-        [this]() { [self togglePotatoGraphics]; }
+        ^{ [weakSelf togglePotatoGraphics]; }
     };
     
     // 4. Счетчик FPS
     _functions["fpsCounter"] = {
         false, "Счетчик FPS",
-        [this]() { [self toggleFPSCounter]; }
+        ^{ [weakSelf toggleFPSCounter]; }
     };
     
     // 5. Усиление яркости
     _functions["brightnessBoost"] = {
         false, "Усиление яркости",
-        [this]() { [self toggleBrightness]; }
+        ^{ [weakSelf toggleBrightness]; }
     };
     
     // 6. Режим чтения
     _functions["readingMode"] = {
         false, "Режим чтения",
-        [this]() { [self toggleReadingMode]; }
+        ^{ [weakSelf toggleReadingMode]; }
     };
     
     // 7. Ночной режим
     _functions["nightMode"] = {
         false, "Ночной режим",
-        [this]() { [self toggleNightMode]; }
+        ^{ [weakSelf toggleNightMode]; }
     };
     
     // 8. Энергосбережение
     _functions["batterySaver"] = {
         false, "Энергосбережение",
-        [this]() { [self toggleBatterySaver]; }
+        ^{ [weakSelf toggleBatterySaver]; }
     };
     
     // 9. Ускорение анимаций
     _functions["animationBoost"] = {
         false, "Ускорение анимаций",
-        [this]() { [self toggleAnimationBoost]; }
+        ^{ [weakSelf toggleAnimationBoost]; }
     };
     
     // 10. Зум экрана
     _functions["screenZoom"] = {
         false, "Зум экрана",
-        [this]() { [self toggleScreenZoom]; }
+        ^{ [weakSelf toggleScreenZoom]; }
     };
     
-    // 11. Растяжение экрана (новая функция)
+    // 11. Растяжение экрана
     _functions["screenStretch"] = {
         false, "Растяжение экрана",
-        [this]() { [self toggleScreenStretch]; }
+        ^{ [weakSelf toggleScreenStretch]; }
     };
     
     // 12. Широкоформатный режим
     _functions["widescreenMode"] = {
         false, "Широкоформатный режим",
-        [this]() { [self toggleWidescreenMode]; }
+        ^{ [weakSelf toggleWidescreenMode]; }
     };
 }
 
@@ -384,7 +400,6 @@ struct FunctionState {
         _currentScale = scale;
         
         // Применяем трансформацию к окну приложения
-        // В реальном приложении здесь нужно найти главное окно и применить transform
         [self applyStretchTransform:scale];
         
     } else if (gesture.state == UIGestureRecognizerStateEnded) {
@@ -482,8 +497,10 @@ struct FunctionState {
     auto& func = _functions[fid];
     func.enabled = !func.enabled;
     
-    // Вызываем соответствующий метод
-    func.toggleCallback();
+    // Вызываем соответствующий блок
+    if (func.toggleBlock) {
+        func.toggleBlock();
+    }
     
     [self showNotification:[NSString stringWithUTF8String:func.name.c_str()] enabled:func.enabled];
     [self updateFunctionButtons];
@@ -567,8 +584,9 @@ struct FunctionState {
 // MARK: - Function Implementations
 - (void)toggleAutoClicker {
     if (_functions["autoClicker"].enabled) {
-        std::thread([this]() {
-            while (_functions["autoClicker"].enabled) {
+        __weak typeof(self) weakSelf = self;
+        std::thread([weakSelf]() {
+            while (weakSelf && weakSelf->_functions["autoClicker"].enabled) {
                 // Симуляция клика
                 dispatch_async(dispatch_get_main_queue(), ^{
                     // Здесь можно эмулировать нажатие
@@ -606,17 +624,18 @@ struct FunctionState {
 }
 
 - (void)toggleReadingMode {
-    if (_functions["readingMode"].enabled) {
+    UIWindow *mainWindow = [UIApplication sharedApplication].keyWindow;
+    UIView *existingOverlay = [mainWindow viewWithTag:999];
+    
+    if (_functions["readingMode"].enabled && !existingOverlay) {
         // Режим чтения (сепия)
-        UIWindow *mainWindow = [UIApplication sharedApplication].keyWindow;
         UIView *colorOverlay = [[UIView alloc] initWithFrame:mainWindow.bounds];
         colorOverlay.backgroundColor = [UIColor colorWithRed:0.9 green:0.8 blue:0.7 alpha:0.3];
         colorOverlay.tag = 999;
         colorOverlay.userInteractionEnabled = NO;
         [mainWindow addSubview:colorOverlay];
     } else {
-        UIWindow *mainWindow = [UIApplication sharedApplication].keyWindow;
-        [[mainWindow viewWithTag:999] removeFromSuperview];
+        [existingOverlay removeFromSuperview];
     }
 }
 
@@ -646,14 +665,14 @@ struct FunctionState {
 }
 
 - (void)toggleScreenZoom {
+    UIWindow *mainWindow = [UIApplication sharedApplication].keyWindow;
+    
     if (_functions["screenZoom"].enabled) {
         // Зум экрана
-        UIWindow *mainWindow = [UIApplication sharedApplication].keyWindow;
         [UIView animateWithDuration:0.3 animations:^{
             mainWindow.transform = CGAffineTransformMakeScale(1.2, 1.2);
         }];
     } else {
-        UIWindow *mainWindow = [UIApplication sharedApplication].keyWindow;
         [UIView animateWithDuration:0.3 animations:^{
             mainWindow.transform = CGAffineTransformIdentity;
         }];
@@ -683,14 +702,14 @@ struct FunctionState {
 }
 
 - (void)toggleWidescreenMode {
+    UIWindow *mainWindow = [UIApplication sharedApplication].keyWindow;
+    
     if (_functions["widescreenMode"].enabled) {
         // Широкоформатный режим (21:9)
-        UIWindow *mainWindow = [UIApplication sharedApplication].keyWindow;
         [UIView animateWithDuration:0.5 animations:^{
             mainWindow.transform = CGAffineTransformMakeScale(1.3, 1.0);
         }];
     } else {
-        UIWindow *mainWindow = [UIApplication sharedApplication].keyWindow;
         [UIView animateWithDuration:0.5 animations:^{
             mainWindow.transform = CGAffineTransformIdentity;
         }];
