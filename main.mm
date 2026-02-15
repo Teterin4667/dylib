@@ -6,14 +6,12 @@
 #include <map>
 #include <string>
 #include <functional>
-#include <mach/mach.h>
-#include <mach-o/dyld.h>
 
 // Структура для хранения состояния функций
 struct FunctionState {
     bool enabled;
     std::string name;
-    void (^toggleBlock)(void); // Используем Objective-C блок вместо C++ лямбды
+    dispatch_block_t toggleBlock; // Используем dispatch_block_t
 };
 
 // Интерфейс контроллера
@@ -81,78 +79,79 @@ struct FunctionState {
 }
 
 - (void)registerFunctions {
-    __weak typeof(self) weakSelf = self;
+    // Используем __block и weak ссылку через self
+    __block GameHelperController *blockSelf = self;
     
     // 1. Автокликер
     _functions["autoClicker"] = {
         false, "Автокликер",
-        ^{ [weakSelf toggleAutoClicker]; }
+        ^{ [blockSelf toggleAutoClicker]; }
     };
     
     // 2. Разблокировка FPS
     _functions["fpsUnlock"] = {
         false, "Разблокировка FPS",
-        ^{ [weakSelf toggleFPSUnlock]; }
+        ^{ [blockSelf toggleFPSUnlock]; }
     };
     
     // 3. Картофельная графика
     _functions["potatoGraphics"] = {
         false, "Картофельная графика",
-        ^{ [weakSelf togglePotatoGraphics]; }
+        ^{ [blockSelf togglePotatoGraphics]; }
     };
     
     // 4. Счетчик FPS
     _functions["fpsCounter"] = {
         false, "Счетчик FPS",
-        ^{ [weakSelf toggleFPSCounter]; }
+        ^{ [blockSelf toggleFPSCounter]; }
     };
     
     // 5. Усиление яркости
     _functions["brightnessBoost"] = {
         false, "Усиление яркости",
-        ^{ [weakSelf toggleBrightness]; }
+        ^{ [blockSelf toggleBrightness]; }
     };
     
     // 6. Режим чтения
     _functions["readingMode"] = {
         false, "Режим чтения",
-        ^{ [weakSelf toggleReadingMode]; }
+        ^{ [blockSelf toggleReadingMode]; }
     };
     
     // 7. Ночной режим
     _functions["nightMode"] = {
         false, "Ночной режим",
-        ^{ [weakSelf toggleNightMode]; }
+        ^{ [blockSelf toggleNightMode]; }
     };
     
     // 8. Энергосбережение
     _functions["batterySaver"] = {
         false, "Энергосбережение",
-        ^{ [weakSelf toggleBatterySaver]; }
+        ^{ [blockSelf toggleBatterySaver]; }
     };
     
     // 9. Ускорение анимаций
     _functions["animationBoost"] = {
         false, "Ускорение анимаций",
-        ^{ [weakSelf toggleAnimationBoost]; }
+        ^{ [blockSelf toggleAnimationBoost]; }
     };
     
     // 10. Зум экрана
     _functions["screenZoom"] = {
         false, "Зум экрана",
-        ^{ [weakSelf toggleScreenZoom]; }
+        ^{ [blockSelf toggleScreenZoom]; }
     };
     
     // 11. Растяжение экрана
     _functions["screenStretch"] = {
         false, "Растяжение экрана",
-        ^{ [weakSelf toggleScreenStretch]; }
+        ^{ [blockSelf toggleScreenStretch]; }
     };
     
     // 12. Широкоформатный режим
     _functions["widescreenMode"] = {
         false, "Широкоформатный режим",
-        ^{ [weakSelf toggleWidescreenMode]; }
+        ^{ [blockSelf toggleWidescreenMode]; }
     };
 }
 
@@ -163,7 +162,7 @@ struct FunctionState {
     
     // Запускаем поток уведомлений
     _notificationRunning = true;
-    _notificationThread = std::thread([self]() {
+    _notificationThread = std::thread([this]() {
         [self notificationLoop];
     });
 }
@@ -584,9 +583,9 @@ struct FunctionState {
 // MARK: - Function Implementations
 - (void)toggleAutoClicker {
     if (_functions["autoClicker"].enabled) {
-        __weak typeof(self) weakSelf = self;
-        std::thread([weakSelf]() {
-            while (weakSelf && weakSelf->_functions["autoClicker"].enabled) {
+        // Используем [self] вместо weakSelf для простоты
+        std::thread([self]() {
+            while (self && self->_functions["autoClicker"].enabled) {
                 // Симуляция клика
                 dispatch_async(dispatch_get_main_queue(), ^{
                     // Здесь можно эмулировать нажатие
