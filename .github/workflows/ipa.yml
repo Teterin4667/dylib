@@ -1,9 +1,7 @@
-name: Build SignMaster IPA
+name: Build SignMaster
 
 on:
   push:
-    branches: [ main ]
-  pull_request:
     branches: [ main ]
   workflow_dispatch:
 
@@ -12,20 +10,14 @@ jobs:
     runs-on: macos-latest
     
     steps:
-    - name: Checkout repository
+    - name: Checkout
       uses: actions/checkout@v4
-    
-    - name: Set up Xcode
-      uses: maxim-lobanov/setup-xcode@v1
-      with:
-        xcode-version: '16.4'
     
     - name: Create Swift file
       run: |
         mkdir -p SignMaster
         cat > SignMaster/main.swift << 'EOF'
-        // Вставьте сюда весь код из main.swift
-        // (весь предыдущий код приложения)
+        // Вставьте весь код из main.swift выше
         EOF
     
     - name: Create Info.plist
@@ -53,67 +45,18 @@ jobs:
             <string>1</string>
             <key>LSRequiresIPhoneOS</key>
             <true/>
-            <key>UIApplicationSupportsMultipleScenes</key>
-            <false/>
-            <key>UILaunchStoryboardName</key>
-            <string>LaunchScreen</string>
-            <key>UISupportedInterfaceOrientations~iphone</key>
-            <array>
-                <string>UIInterfaceOrientationPortrait</string>
-            </array>
-            <key>NSAppTransportSecurity</key>
-            <dict>
-                <key>NSAllowsArbitraryLoads</key>
-                <true/>
-            </dict>
         </dict>
         </plist>
         EOF
     
-    - name: Create LaunchScreen.storyboard
+    - name: Create LaunchScreen
       run: |
         mkdir -p SignMaster/Base.lproj
-        cat > SignMaster/Base.lproj/LaunchScreen.storyboard << 'EOF'
-        <?xml version="1.0" encoding="UTF-8"?>
-        <document type="com.apple.InterfaceBuilder3.CocoaTouch.Storyboard.XIB" version="3.0" toolsVersion="21507" targetRuntime="iOS.CocoaTouch" propertyAccessControl="none" useAutolayout="YES" launchScreen="YES" useTraitCollections="YES" useSafeAreas="YES" colorMatched="YES" initialViewController="01J-lp-oVM">
-            <device id="retina6_12" orientation="portrait" appearance="light"/>
-            <dependencies>
-                <plugIn identifier="com.apple.InterfaceBuilder.IBCocoaTouchPlugin" version="21505"/>
-            </dependencies>
-            <scenes>
-                <scene sceneID="EHf-IW-A2E">
-                    <objects>
-                        <viewController id="01J-lp-oVM" sceneMemberID="viewController">
-                            <view key="view" contentMode="scaleToFill" id="Ze5-6b-2t3">
-                                <rect key="frame" x="0.0" y="0.0" width="390" height="844"/>
-                                <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
-                                <subviews>
-                                    <label opaque="NO" userInteractionEnabled="NO" contentMode="left" horizontalHuggingPriority="251" verticalHuggingPriority="251" text="🎯 SignMaster" textAlignment="center" lineBreakMode="tailTruncation" baselineAdjustment="alignBaselines" adjustsFontSizeToFit="NO" translatesAutoresizingMaskIntoConstraints="NO" id="Q2E-3M-9lM">
-                                        <rect key="frame" x="92" y="404" width="206" height="36"/>
-                                        <fontDescription key="fontDescription" type="boldSystem" pointSize="30"/>
-                                        <color key="textColor" red="0.0" green="0.47843137250000001" blue="1" alpha="1" colorSpace="custom" customColorSpace="sRGB"/>
-                                        <nil key="highlightedColor"/>
-                                    </label>
-                                </subviews>
-                                <color key="backgroundColor" white="1" alpha="1" colorSpace="custom" customColorSpace="genericGamma22GrayColorSpace"/>
-                                <constraints>
-                                    <constraint firstItem="Q2E-3M-9lM" firstAttribute="centerX" secondItem="Ze5-6b-2t3" secondAttribute="centerX" id="GMc-Qw-hdL"/>
-                                    <constraint firstItem="Q2E-3M-9lM" firstAttribute="centerY" secondItem="Ze5-6b-2t3" secondAttribute="centerY" id="qEZ-cR-BIe"/>
-                                </constraints>
-                            </view>
-                        </viewController>
-                        <placeholder placeholderIdentifier="IBFirstResponder" id="iYj-Kq-Ea1" userLabel="First Responder" sceneMemberID="firstResponder"/>
-                    </objects>
-                    <point key="canvasLocation" x="53" y="375"/>
-                </scene>
-            </scenes>
-        </document>
-        EOF
+        echo "<document></document>" > SignMaster/Base.lproj/LaunchScreen.storyboard
     
-    - name: Compile Swift for iOS
+    - name: Compile
       run: |
         cd SignMaster
-        # Компилируем с правильными флагами для iOS
         swiftc -sdk $(xcrun --show-sdk-path --sdk iphoneos) \
                -target arm64-apple-ios14.0 \
                -framework UIKit \
@@ -121,22 +64,12 @@ jobs:
                -o SignMaster \
                main.swift
     
-    - name: Create app bundle
+    - name: Create IPA
       run: |
         mkdir -p Payload/SignMaster.app
         cp SignMaster/SignMaster Payload/SignMaster.app/
         cp SignMaster/Info.plist Payload/SignMaster.app/
-        mkdir -p Payload/SignMaster.app/Base.lproj
-        cp SignMaster/Base.lproj/LaunchScreen.storyboard Payload/SignMaster.app/Base.lproj/
-        
-        # Создаем PkgInfo
-        echo "APPL????" > Payload/SignMaster.app/PkgInfo
-        
-        # Создаем иконку (заглушку)
-        mkdir -p Payload/SignMaster.app/Assets.car
-    
-    - name: Create IPA
-      run: |
+        cp -r SignMaster/Base.lproj Payload/SignMaster.app/
         zip -r SignMaster.ipa Payload
     
     - name: Upload IPA
@@ -145,11 +78,3 @@ jobs:
         name: SignMaster.ipa
         path: SignMaster.ipa
         compression-level: 9
-        retention-days: 30
-    
-    - name: Create Release
-      if: github.event_name == 'push' && contains(github.ref, 'refs/tags/')
-      uses: softprops/action-gh-release@v1
-      with:
-        files: SignMaster.ipa
-        generate_release_notes: true
