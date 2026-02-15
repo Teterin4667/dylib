@@ -1,63 +1,78 @@
-name: Build IPA
+name: Build Tendies iOS IPA
 
-on: [push]
+on:
+  push:
+  pull_request:
 
 jobs:
   build:
-    runs-on: macos-latest
-    
+    runs-on: macos-15
+
     steps:
-    - uses: actions/checkout@v4
-    
-    - name: Build IPA
-      run: |
-        # Компилируем в исполняемый файл с добавлением фреймворка UniformTypeIdentifiers
-        xcrun -sdk iphoneos clang -arch arm64 -fobjc-arc \
-          -framework UIKit \
-          -framework Foundation \
-          -framework WebKit \
-          -framework UniformTypeIdentifiers \
-          main.m \
-          -o DYLIBStudio
-        
-        # Создаем структуру IPA
-        mkdir -p Payload/DYLIBStudio.app
-        cp DYLIBStudio Payload/DYLIBStudio.app/
-        
-        # Создаем Info.plist
-        cat > Payload/DYLIBStudio.app/Info.plist << EOF
-        <?xml version="1.0" encoding="UTF-8"?>
-        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-        <plist version="1.0">
-        <dict>
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Install ldid
+        run: |
+          brew install ldid
+
+      - name: Build .app
+        run: |
+          mkdir Payload
+
+          xcrun -sdk iphoneos clang main.m \
+            -framework UIKit \
+            -framework AVFoundation \
+            -framework CoreMedia \
+            -framework CoreGraphics \
+            -framework Photos \
+            -framework UserNotifications \
+            -framework MobileCoreServices \
+            -framework UniformTypeIdentifiers \
+            -ObjC -fobjc-arc \
+            -arch arm64 \
+            -o TendiesApp
+
+          mkdir Payload/Tendies.app
+          cp TendiesApp Payload/Tendies.app/
+
+          # Info.plist (минимальный)
+          cat > Payload/Tendies.app/Info.plist <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
             <key>CFBundleExecutable</key>
-            <string>DYLIBStudio</string>
+            <string>TendiesApp</string>
             <key>CFBundleIdentifier</key>
-            <string>com.dylib.studio</string>
+            <string>com.tendies.app</string>
             <key>CFBundleName</key>
-            <string>DYLIBStudio</string>
+            <string>Tendies</string>
             <key>CFBundleVersion</key>
             <string>1.0</string>
             <key>CFBundleShortVersionString</key>
             <string>1.0</string>
-            <key>LSRequiresIPhoneOS</key>
-            <true/>
-            <key>UIRequiredDeviceCapabilities</key>
+            <key>MinimumOSVersion</key>
+            <string>14.0</string>
+            <key>UIDeviceFamily</key>
             <array>
-                <string>arm64</string>
+              <integer>1</integer>
+              <integer>2</integer>
             </array>
-        </dict>
-        </plist>
-        EOF
-        
-        # Подписываем (для разработки)
-        codesign -f -s "iPhone Developer" Payload/DYLIBStudio.app --entitlements /dev/null || true
-        
-        # Создаем IPA
-        zip -r DYLIBStudio.ipa Payload/
-    
-    - name: Upload IPA
-      uses: actions/upload-artifact@v4
-      with:
-        name: DYLIBStudio.ipa
-        path: DYLIBStudio.ipa
+          </dict>
+          </plist>
+          EOF
+
+      - name: Sign .app with ldid
+        run: |
+          ldid -S Payload/Tendies.app/TendiesApp
+
+      - name: Make IPA
+        run: |
+          zip -r Tendies.ipa Payload
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Tendies-iOS-IPA
+          path: Tendies.ipa
