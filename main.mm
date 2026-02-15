@@ -28,7 +28,6 @@ struct FunctionState {
     UILabel *_notificationLabel;
     NSMutableArray *_functionButtons;
     std::map<std::string, FunctionState> _functions;
-    bool _notificationRunning;
     bool _isMenuVisible;
     CGPoint _lastTouchPoint;
 }
@@ -60,7 +59,6 @@ struct FunctionState {
     self = [super init];
     if (self) {
         _functionButtons = [NSMutableArray new];
-        _notificationRunning = false;
         _isMenuVisible = false;
         _lastTouchPoint = CGPointZero;
         [self registerFunctions];
@@ -71,7 +69,6 @@ struct FunctionState {
 - (void)registerFunctions {
     __weak GameHelperController *weakSelf = self;
     
-    // Компактный набор функций (только самые полезные)
     _functions["autoClicker"] = {
         false, "Автокликер",
         ^{ [weakSelf toggleAutoClicker]; }
@@ -135,8 +132,6 @@ struct FunctionState {
 }
 
 - (void)cleanup {
-    _notificationRunning = false;
-    
     dispatch_async(dispatch_get_main_queue(), ^{
         [_overlayWindow removeFromSuperview];
         _overlayWindow = nil;
@@ -144,26 +139,20 @@ struct FunctionState {
 }
 
 - (void)createUI {
-    // Создаем окно поверх всех
     _overlayWindow = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
     _overlayWindow.windowLevel = UIWindowLevelAlert + 1;
     _overlayWindow.backgroundColor = [UIColor clearColor];
     _overlayWindow.userInteractionEnabled = YES;
     _overlayWindow.hidden = NO;
     
-    // Создаем плавающую кнопку
     [self createFloatingButton];
-    
-    // Создаем меню
     [self createMenu];
-    
-    // Создаем уведомление
     [self createNotificationLabel];
 }
 
 - (void)createFloatingButton {
     _floatingButton = [UIButton buttonWithType:UIButtonTypeCustom];
-    _floatingButton.frame = CGRectMake(20, 100, 44, 44); // Уменьшил кнопку
+    _floatingButton.frame = CGRectMake(20, 100, 44, 44);
     _floatingButton.backgroundColor = [UIColor colorWithRed:0.2 green:0.5 blue:1.0 alpha:0.85];
     _floatingButton.layer.cornerRadius = 22;
     _floatingButton.layer.shadowColor = [UIColor blackColor].CGColor;
@@ -177,7 +166,6 @@ struct FunctionState {
     [_floatingButton setTitle:@"⚙️" forState:UIControlStateNormal];
     _floatingButton.titleLabel.font = [UIFont systemFontOfSize:20];
     
-    // Добавляем возможность перетаскивания
     UIPanGestureRecognizer *panGesture = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(dragButton:)];
     [_floatingButton addGestureRecognizer:panGesture];
     
@@ -187,7 +175,6 @@ struct FunctionState {
 }
 
 - (void)createMenu {
-    CGFloat menuHeight = BUTTON_HEIGHT * _functions.size() + MENU_PADDING * 2 + 10;
     _menuView = [[UIView alloc] initWithFrame:CGRectMake(20, 150, MENU_WIDTH, 0)];
     _menuView.backgroundColor = [UIColor colorWithWhite:0.1 alpha:0.9];
     _menuView.layer.cornerRadius = 12;
@@ -200,7 +187,6 @@ struct FunctionState {
     
     [_overlayWindow addSubview:_menuView];
     
-    // Заполняем меню функциями
     [self populateCompactMenu];
 }
 
@@ -223,14 +209,12 @@ struct FunctionState {
         buttonContainer.layer.cornerRadius = 6;
         buttonContainer.tag = index;
         
-        // Название функции
         UILabel *nameLabel = [[UILabel alloc] initWithFrame:CGRectMake(8, 0, 130, BUTTON_HEIGHT)];
         nameLabel.text = [NSString stringWithUTF8String:func.name.c_str()];
         nameLabel.textColor = [UIColor whiteColor];
         nameLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightMedium];
         [buttonContainer addSubview:nameLabel];
         
-        // Индикатор состояния
         UILabel *statusLabel = [[UILabel alloc] initWithFrame:CGRectMake(140, 0, 30, BUTTON_HEIGHT)];
         statusLabel.tag = 100;
         statusLabel.text = @"⚪";
@@ -249,7 +233,6 @@ struct FunctionState {
         index++;
     }
     
-    // Добавляем кнопку закрытия
     UIButton *closeButton = [UIButton buttonWithType:UIButtonTypeCustom];
     closeButton.frame = CGRectMake(MENU_PADDING, yOffset, MENU_WIDTH - MENU_PADDING*2, BUTTON_HEIGHT);
     closeButton.backgroundColor = [UIColor colorWithRed:0.8 green:0.2 blue:0.2 alpha:0.8];
@@ -261,7 +244,6 @@ struct FunctionState {
     
     [_menuView addSubview:closeButton];
     
-    // Обновляем высоту меню
     CGRect menuFrame = _menuView.frame;
     menuFrame.size.height = yOffset + BUTTON_HEIGHT + MENU_PADDING;
     _menuView.frame = menuFrame;
@@ -280,7 +262,6 @@ struct FunctionState {
     [_overlayWindow addSubview:_notificationLabel];
 }
 
-// MARK: - Gesture Handlers
 - (void)dragButton:(UIPanGestureRecognizer *)gesture {
     UIButton *button = (UIButton *)gesture.view;
     CGPoint translation = [gesture translationInView:button.superview];
@@ -293,7 +274,6 @@ struct FunctionState {
         CGPoint newCenter = CGPointMake(button.center.x + translation.x,
                                        button.center.y + translation.y);
         
-        // Ограничиваем краями экрана
         CGFloat minX = button.frame.size.width/2;
         CGFloat maxX = button.superview.bounds.size.width - button.frame.size.width/2;
         CGFloat minY = button.frame.size.height/2 + 40;
@@ -305,12 +285,10 @@ struct FunctionState {
         button.center = newCenter;
         [gesture setTranslation:CGPointZero inView:button.superview];
         
-        // Перемещаем меню вместе с кнопкой
         [self updateMenuPosition];
     }
 }
 
-// MARK: - Menu Actions
 - (void)toggleMenu {
     _isMenuVisible = !_isMenuVisible;
     
@@ -342,7 +320,6 @@ struct FunctionState {
     menuFrame.origin.x = _floatingButton.frame.origin.x;
     menuFrame.origin.y = CGRectGetMaxY(_floatingButton.frame) + 5;
     
-    // Проверяем, не выходит ли меню за экран
     if (menuFrame.origin.y + menuFrame.size.height > _overlayWindow.bounds.size.height - 20) {
         menuFrame.origin.y = _floatingButton.frame.origin.y - menuFrame.size.height - 5;
     }
@@ -377,7 +354,6 @@ struct FunctionState {
     auto& func = _functions[fid];
     func.enabled = !func.enabled;
     
-    // Вызываем соответствующий блок
     if (func.toggleBlock) {
         func.toggleBlock();
     }
@@ -404,7 +380,6 @@ struct FunctionState {
             statusLabel.text = enabled ? @"✅" : @"⚪";
             statusLabel.textColor = enabled ? [UIColor greenColor] : [UIColor grayColor];
             
-            // Подсветка активной функции
             container.backgroundColor = enabled ? 
                 [UIColor colorWithRed:0.3 green:0.5 blue:0.3 alpha:0.9] :
                 [UIColor colorWithWhite:0.2 alpha:0.9];
@@ -431,20 +406,19 @@ struct FunctionState {
     });
 }
 
-// MARK: - Function Implementations
 - (void)toggleAutoClicker {
     if (_functions["autoClicker"].enabled) {
         __weak GameHelperController *weakSelf = self;
         
         dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_BACKGROUND, 0), ^{
-            while (weakSelf && weakSelf->_functions["autoClicker"].enabled) {
-                // Эмуляция клика в фоне
+            GameHelperController *strongSelf = weakSelf;
+            while (strongSelf && strongSelf->_functions["autoClicker"].enabled) {
                 [NSThread sleepForTimeInterval:0.1];
+                strongSelf = weakSelf; // Обновляем strongSelf на каждой итерации
             }
         });
-        
-        [self showNotification:@"Автокликер" enabled:YES];
     }
+    [self showNotification:@"Автокликер" enabled:_functions["autoClicker"].enabled];
 }
 
 - (void)toggleFPSUnlock {
@@ -460,21 +434,30 @@ struct FunctionState {
         __weak GameHelperController *weakSelf = self;
         
         dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_BACKGROUND, 0), ^{
-            while (weakSelf && weakSelf->_functions["fpsCounter"].enabled) {
+            GameHelperController *strongSelf = weakSelf;
+            while (strongSelf && strongSelf->_functions["fpsCounter"].enabled) {
                 dispatch_async(dispatch_get_main_queue(), ^{
-                    int fps = 30 + arc4random_uniform(30);
-                    weakSelf->_notificationLabel.text = [NSString stringWithFormat:@"📊 FPS: %d", fps];
-                    weakSelf->_notificationLabel.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.7];
-                    weakSelf->_notificationLabel.alpha = 0.8;
-                    
-                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                        weakSelf->_notificationLabel.alpha = 0.0;
-                    });
+                    GameHelperController *innerStrongSelf = weakSelf;
+                    if (innerStrongSelf) {
+                        int fps = 30 + arc4random_uniform(30);
+                        innerStrongSelf->_notificationLabel.text = [NSString stringWithFormat:@"📊 FPS: %d", fps];
+                        innerStrongSelf->_notificationLabel.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.7];
+                        innerStrongSelf->_notificationLabel.alpha = 0.8;
+                        
+                        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                            GameHelperController *finalStrongSelf = weakSelf;
+                            if (finalStrongSelf) {
+                                finalStrongSelf->_notificationLabel.alpha = 0.0;
+                            }
+                        });
+                    }
                 });
                 [NSThread sleepForTimeInterval:2.0];
+                strongSelf = weakSelf; // Обновляем strongSelf на каждой итерации
             }
         });
     }
+    [self showNotification:@"Счетчик FPS" enabled:_functions["fpsCounter"].enabled];
 }
 
 - (void)toggleBrightness {
@@ -567,7 +550,6 @@ struct FunctionState {
 // Глобальный экземпляр
 static GameHelperController *g_helper = nil;
 
-// Функции для экспорта
 extern "C" {
     void init_game_helper() {
         static dispatch_once_t onceToken;
