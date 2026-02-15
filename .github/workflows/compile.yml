@@ -16,11 +16,11 @@ jobs:
           -framework Foundation \
           -framework CoreGraphics \
           -isysroot $(xcrun -sdk iphoneos --show-sdk-path) \
-          main.m \
-          -o standoff2_cheat.dylib
+          memory_browser.m \
+          -o memory_browser.dylib
     
     - name: Upload dylib
       uses: actions/upload-artifact@v4
       with:
-        name: standoff2_cheat.dylib
-        path: standoff2_cheat.dylib
+        name: memory_browser.dylib
+        path: memory_browser.dylib
