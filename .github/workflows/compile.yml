@@ -9,86 +9,120 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     
-    - name: Download ImGui
+    - name: Create menu.m
       run: |
-        curl -L https://github.com/ocornut/imgui/archive/refs/heads/master.zip -o imgui.zip
-        unzip imgui.zip
-        cp imgui-master/*.cpp .
-        cp imgui-master/*.h .
-        cp imgui-master/backends/imgui_impl_opengl3* .
-        cp imgui-master/backends/imgui_impl_osx* .
-    
-    - name: Create menu.cpp
-      run: |
-        cat > menu.cpp << 'EOF'
-        #include "imgui.h"
-        #include "imgui_impl_osx.h"
-        #include "imgui_impl_opengl3.h"
+        cat > menu.m << 'EOF'
         #include <objc/runtime.h>
         #include <UIKit/UIKit.h>
-        #include <OpenGLES/ES2/gl.h>
         
-        static bool g_menu_visible = true;
-        static float f = 0.0f;
-        static int counter = 0;
-        
-        @interface ImGuiView : UIView @end
-        
-        @implementation ImGuiView
-        - (void)drawRect:(CGRect)rect {
-            [super drawRect:rect];
-            
-            if (g_menu_visible) {
-                [EAGLContext setCurrentContext:[(CAEAGLLayer*)self.layer context]];
-                
-                ImGui_ImplOpenGL3_NewFrame();
-                ImGui_ImplOSX_NewFrame(self);
-                ImGui::NewFrame();
-                
-                ImGui::Begin("Floating Menu", &g_menu_visible);
-                ImGui::Text("Counter: %d", counter);
-                if (ImGui::Button("Click")) counter++;
-                ImGui::SliderFloat("float", &f, 0.0f, 1.0f);
-                ImGui::End();
-                
-                ImGui::Render();
-                ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-            }
-        }
+        @interface FloatingMenu : UIView
+        @property (nonatomic, strong) UIButton *button;
+        @property (nonatomic, strong) UILabel *label;
+        @property (nonatomic, assign) CGPoint touchOffset;
         @end
+        
+        @implementation FloatingMenu
+        
+        - (instancetype)initWithFrame:(CGRect)frame {
+            self = [super initWithFrame:frame];
+            if (self) {
+                self.backgroundColor = [UIColor colorWithRed:0.2 green:0.5 blue:0.9 alpha:0.9];
+                self.layer.cornerRadius = 10;
+                self.layer.borderWidth = 2;
+                self.layer.borderColor = [UIColor whiteColor].CGColor;
+                
+                UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(10, 5, 100, 20)];
+                title.text = @"Menu";
+                title.textColor = [UIColor whiteColor];
+                [self addSubview:title];
+                
+                _label = [[UILabel alloc] initWithFrame:CGRectMake(100, 30, 50, 30)];
+                _label.text = @"0";
+                _label.textColor = [UIColor whiteColor];
+                [self addSubview:_label];
+                
+                _button = [UIButton buttonWithType:UIButtonTypeSystem];
+                _button.frame = CGRectMake(10, 30, 80, 30);
+                [_button setTitle:@"Click" forState:UIControlStateNormal];
+                _button.backgroundColor = [UIColor whiteColor];
+                [_button addTarget:self action:@selector(clicked) forControlEvents:UIControlEventTouchUpInside];
+                [self addSubview:_button];
+                
+                UIButton *closeBtn = [UIButton buttonWithType:UIButtonTypeCustom];
+                closeBtn.frame = CGRectMake(140, 5, 30, 20);
+                [closeBtn setTitle:@"✕" forState:UIControlStateNormal];
+                [closeBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+                [closeBtn addTarget:self action:@selector(close) forControlEvents:UIControlEventTouchUpInside];
+                [self addSubview:closeBtn];
+            }
+            return self;
+        }
+        
+        - (void)clicked {
+            int count = [self.label.text intValue] + 1;
+            self.label.text = [NSString stringWithFormat:@"%d", count];
+        }
+        
+        - (void)close {
+            [self removeFromSuperview];
+        }
+        
+        - (void)touchesBegan:(NSSet *)touches withEvent:(UIEvent *)event {
+            UITouch *touch = [touches anyObject];
+            CGPoint point = [touch locationInView:self.superview];
+            self.touchOffset = CGPointMake(point.x - self.frame.origin.x, point.y - self.frame.origin.y);
+        }
+        
+        - (void)touchesMoved:(NSSet *)touches withEvent:(UIEvent *)event {
+            UITouch *touch = [touches anyObject];
+            CGPoint point = [touch locationInView:self.superview];
+            self.frame = CGRectMake(point.x - self.touchOffset.x, point.y - self.touchOffset.y, 
+                                   self.frame.size.width, self.frame.size.height);
+        }
+        
+        @end
+        
+        static void (*orig_viewDidAppear)(id, SEL, BOOL);
+        
+        static void hooked_viewDidAppear(id self, SEL _cmd, BOOL animated) {
+            orig_viewDidAppear(self, _cmd, animated);
+            
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 1 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+                UIWindow *window = [UIApplication sharedApplication].keyWindow;
+                
+                BOOL exists = NO;
+                for (UIView *v in window.subviews) {
+                    if ([v isKindOfClass:[FloatingMenu class]]) {
+                        exists = YES;
+                        break;
+                    }
+                }
+                
+                if (!exists) {
+                    FloatingMenu *menu = [[FloatingMenu alloc] initWithFrame:CGRectMake(50, 100, 180, 70)];
+                    [window addSubview:menu];
+                }
+            });
+        }
         
         __attribute__((constructor))
         static void init() {
             dispatch_async(dispatch_get_main_queue(), ^{
-                UIWindow *window = [UIApplication sharedApplication].keyWindow;
-                UIView *view = window.rootViewController.view;
-                
-                IMGUI_CHECKVERSION();
-                ImGui::CreateContext();
-                ImGui_ImplOSX_Init((__bridge void*)view);
-                ImGui_ImplOpenGL3_Init("#version 100");
-                
-                object_setClass(view, [ImGuiView class]);
+                Class class = [UIViewController class];
+                Method original = class_getInstanceMethod(class, @selector(viewDidAppear:));
+                orig_viewDidAppear = (void *)method_setImplementation(original, (IMP)hooked_viewDidAppear);
             });
         }
         EOF
     
-    - name: Compile dylib
+    - name: Compile with Xcode
       run: |
-        clang++ -arch arm64 -fobjc-arc -dynamiclib \
+        xcrun -sdk iphoneos clang -arch arm64 -fobjc-arc -dynamiclib \
           -framework UIKit \
-          -framework OpenGLES \
-          -framework CoreGraphics \
           -framework Foundation \
-          -framework QuartzCore \
-          -x objective-c++ \
-          menu.cpp \
-          imgui.cpp \
-          imgui_draw.cpp \
-          imgui_tables.cpp \
-          imgui_widgets.cpp \
-          imgui_impl_opengl3.cpp \
-          imgui_impl_osx.mm \
+          -framework CoreGraphics \
+          -isysroot $(xcrun -sdk iphoneos --show-sdk-path) \
+          menu.m \
           -o floatingmenu.dylib
     
     - name: Upload dylib
