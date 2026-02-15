@@ -7,13 +7,15 @@ jobs:
     runs-on: macos-latest
     
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
     
     - name: Download ImGui
       run: |
         curl -L https://github.com/ocornut/imgui/archive/refs/heads/master.zip -o imgui.zip
         unzip imgui.zip
         cp -r imgui-master/* .
+        cp imgui-master/backends/imgui_impl_ios* .
+        cp imgui-master/backends/imgui_impl_opengl3* .
     
     - name: Compile dylib
       run: |
@@ -23,6 +25,7 @@ jobs:
           -framework OpenGLES \
           -framework CoreGraphics \
           -framework Foundation \
+          -framework QuartzCore \
           menu.cpp \
           imgui.cpp \
           imgui_draw.cpp \
@@ -33,7 +36,7 @@ jobs:
           -o floatingmenu.dylib
     
     - name: Upload dylib
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: floatingmenu.dylib
         path: floatingmenu.dylib
