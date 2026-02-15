@@ -3,22 +3,126 @@
 #import <Photos/Photos.h>
 #import <UserNotifications/UserNotifications.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+#import <MobileCoreServices/MobileCoreServices.h>
+
+// MARK: - Менеджер для работы с UDID PosterBoard
+@interface UDIDManager : NSObject
++ (NSString *)getSavedUDID;
++ (void)saveUDID:(NSString *)udid;
++ (NSString *)promptForUDID;
++ (NSString *)detectPosterBoardUDID;
+@end
+
+@implementation UDIDManager
+
+// Сохранение UDID в UserDefaults
++ (void)saveUDID:(NSString *)udid {
+    [[NSUserDefaults standardUserDefaults] setObject:udid forKey:@"PosterBoardUDID"];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+}
+
+// Получение сохраненного UDID
++ (NSString *)getSavedUDID {
+    return [[NSUserDefaults standardUserDefaults] stringForKey:@"PosterBoardUDID"];
+}
+
+// Автоматическое определение UDID PosterBoard
++ (NSString *)detectPosterBoardUDID {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *appsPath = @"/var/mobile/Containers/Data/Application";
+    
+    if ([fm fileExistsAtPath:appsPath]) {
+        NSArray *contents = [fm contentsOfDirectoryAtPath:appsPath error:nil];
+        for (NSString *item in contents) {
+            // Проверяем формат UUID
+            if ([item length] == 36 && [item containsString:@"-"]) {
+                NSString *appPath = [appsPath stringByAppendingPathComponent:item];
+                NSString *metadataPath = [appPath stringByAppendingPathComponent:@".com.apple.mobile_container_manager.metadata.plist"];
+                
+                if ([fm fileExistsAtPath:metadataPath]) {
+                    NSDictionary *metadata = [NSDictionary dictionaryWithContentsOfFile:metadataPath];
+                    NSString *identifier = metadata[@"MCMMetadataIdentifier"];
+                    
+                    if ([identifier isEqualToString:@"com.apple.PosterBoard"]) {
+                        return item;
+                    }
+                }
+            }
+        }
+    }
+    return nil;
+}
+
+// Создание UI для ввода UDID
++ (NSString *)promptForUDID {
+    NSString *saved = [self getSavedUDID];
+    NSString *detected = [self detectPosterBoardUDID];
+    
+    dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
+    __block NSString *result = saved ?: detected ?: @"";
+    
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIViewController *topVC = [PosterBoardManager getCurrentViewController];
+        
+        UIAlertController *alert = [UIAlertController 
+            alertControllerWithTitle:@"Настройка PosterBoard" 
+            message:[NSString stringWithFormat:@"Введите UDID PosterBoard\n\n%@\n\nКак найти:\n1. Установите Nugget\n2. Подключите iPhone\n3. Нажмите 'Read UDID'\n4. Скопируйте UDID приложения PosterBoard", 
+                     detected ? [NSString stringWithFormat:@"Найден UDID: %@", detected] : @"UDID не найден"]
+            preferredStyle:UIAlertControllerStyleAlert];
+        
+        [alert addTextFieldWithConfigurationHandler:^(UITextField *textField) {
+            textField.placeholder = @"XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX";
+            textField.text = saved;
+            textField.keyboardType = UIKeyboardTypeDefault;
+            textField.autocapitalizationType = UITextAutocapitalizationTypeNone;
+        }];
+        
+        [alert addAction:[UIAlertAction actionWithTitle:@"Сохранить" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            NSString *udid = alert.textFields.firstObject.text;
+            if (udid.length > 0) {
+                [self saveUDID:udid];
+                result = udid;
+            }
+            dispatch_semaphore_signal(semaphore);
+        }]];
+        
+        [alert addAction:[UIAlertAction actionWithTitle:@"Отмена" style:UIAlertActionStyleCancel handler:^(UIAlertAction *action) {
+            dispatch_semaphore_signal(semaphore);
+        }]];
+        
+        [topVC presentViewController:alert animated:YES completion:nil];
+    });
+    
+    dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
+    return result;
+}
+
+@end
 
 // MARK: - Структуры для PosterBoard (iOS 16+)
 @interface PosterBoardManager : NSObject
 + (void)injectToPosterBoard:(NSData *)wallpaperData withName:(NSString *)name;
 + (void)resetAppleCollections;
 + (void)createWallpaperInAppleCollections:(NSData *)wallpaperData withName:(NSString *)name;
-+ (void)applyWallpaperViaPosterBoard:(NSString *)tendiesFilePath;
 + (UIViewController *)getCurrentViewController;
 + (NSString *)getPosterBoardPath;
 @end
 
 @implementation PosterBoardManager
 
-// Получение актуального пути PosterBoard для iOS 16+
+// Получение актуального пути PosterBoard для iOS 16+ с использованием UDID
 + (NSString *)getPosterBoardPath {
-    // Для iOS 16+ путь может отличаться
+    NSString *udid = [UDIDManager getSavedUDID];
+    
+    if (!udid || udid.length == 0) {
+        udid = [UDIDManager promptForUDID];
+    }
+    
+    if (udid && udid.length > 0) {
+        return [NSString stringWithFormat:@"/var/mobile/Containers/Data/Application/%@", udid];
+    }
+    
+    // Fallback пути если UDID не получен
     NSArray *paths = @[
         @"/var/mobile/Containers/Data/Application/com.apple.PosterBoard",
         @"/private/var/mobile/Containers/Data/Application/com.apple.PosterBoard",
@@ -31,6 +135,12 @@
             return path;
         }
     }
+    
+    // Если ничего не найдено, используем сохраненный UDID с путем
+    if (udid) {
+        return [NSString stringWithFormat:@"/var/mobile/Containers/Data/Application/%@", udid];
+    }
+    
     return paths[0];
 }
 
@@ -58,49 +168,67 @@
     NSString *collectionsPath = [NSString stringWithFormat:@"%@/Library/Application Support/PRBPosterExtensionDataStore/com.apple.WallpaperKit.CollectionsPoster", posterBoardPath];
     
     NSFileManager *fm = [NSFileManager defaultManager];
-    NSError *error = nil;
     
     if ([fm fileExistsAtPath:collectionsPath]) {
-        // Удаляем все пользовательские коллекции
-        NSArray *contents = [fm contentsOfDirectoryAtPath:collectionsPath error:&error];
+        // Создаем бэкап если его нет
+        NSString *backupPath = [NSString stringWithFormat:@"%@.bak", collectionsPath];
+        if (![fm fileExistsAtPath:backupPath]) {
+            [fm copyItemAtPath:collectionsPath toPath:backupPath error:nil];
+        }
+        
+        // Удаляем все пользовательские коллекции кроме системных
+        NSArray *contents = [fm contentsOfDirectoryAtPath:collectionsPath error:nil];
         for (NSString *item in contents) {
             NSString *fullPath = [collectionsPath stringByAppendingPathComponent:item];
             
-            // Проверяем что это не системная коллекция Apple
-            if (![item containsString:@"com.apple."]) {
+            // Сохраняем только Apple коллекции
+            if (![item hasPrefix:@"com.apple."]) {
                 [fm removeItemAtPath:fullPath error:nil];
             }
         }
         
-        // Восстанавливаем оригинальные коллекции Apple
-        NSString *appleCollectionsPath = [NSString stringWithFormat:@"%@/Library/Application Support/PRBPosterExtensionDataStore/com.apple.WallpaperKit.CollectionsPoster.bak", posterBoardPath];
+        // Отправляем сигнал PosterBoard на перезагрузку
+        [self notifyPosterBoardReload];
         
-        if ([fm fileExistsAtPath:appleCollectionsPath]) {
-            NSArray *appleCollections = [fm contentsOfDirectoryAtPath:appleCollectionsPath error:nil];
-            for (NSString *collection in appleCollections) {
-                NSString *sourcePath = [appleCollectionsPath stringByAppendingPathComponent:collection];
-                NSString *destPath = [collectionsPath stringByAppendingPathComponent:collection];
-                [fm copyItemAtPath:sourcePath toPath:destPath error:nil];
-            }
-        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Коллекции сброшены" 
+                                                                           message:@"Коллекции Apple восстановлены" 
+                                                                    preferredStyle:UIAlertControllerStyleAlert];
+            [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+            [[self getCurrentViewController] presentViewController:alert animated:YES completion:nil];
+        });
+    } else {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Ошибка" 
+                                                                           message:@"Коллекции не найдены. Проверьте UDID PosterBoard" 
+                                                                    preferredStyle:UIAlertControllerStyleAlert];
+            [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+                [UDIDManager promptForUDID];
+            }]];
+            [[self getCurrentViewController] presentViewController:alert animated:YES completion:nil];
+        });
     }
-    
-    // Отправляем сигнал PosterBoard на перезагрузку
-    [self notifyPosterBoardReload];
-    
-    dispatch_async(dispatch_get_main_queue(), ^{
-        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Коллекции сброшены" 
-                                                                       message:@"Коллекции Apple восстановлены" 
-                                                                preferredStyle:UIAlertControllerStyleAlert];
-        [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-        [[self getCurrentViewController] presentViewController:alert animated:YES completion:nil];
-    });
 }
 
 // СОЗДАНИЕ ОБОЕВ В КОЛЛЕКЦИЯХ APPLE
 + (void)createWallpaperInAppleCollections:(NSData *)wallpaperData withName:(NSString *)name {
     NSString *posterBoardPath = [self getPosterBoardPath];
     NSString *appleCollectionsPath = [NSString stringWithFormat:@"%@/Library/Application Support/PRBPosterExtensionDataStore/com.apple.WallpaperKit.CollectionsPoster", posterBoardPath];
+    
+    // Проверяем существует ли путь
+    if (![[NSFileManager defaultManager] fileExistsAtPath:appleCollectionsPath]) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Ошибка" 
+                                                                           message:@"Путь PosterBoard не найден. Проверьте UDID" 
+                                                                    preferredStyle:UIAlertControllerStyleAlert];
+            [alert addAction:[UIAlertAction actionWithTitle:@"Ввести UDID" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+                [UDIDManager promptForUDID];
+            }]];
+            [alert addAction:[UIAlertAction actionWithTitle:@"Отмена" style:UIAlertActionStyleCancel handler:nil]];
+            [[self getCurrentViewController] presentViewController:alert animated:YES completion:nil];
+        });
+        return;
+    }
     
     // Создаем структуру как у Apple коллекций
     NSString *collectionId = [NSString stringWithFormat:@"com.apple.wallpaper.tendies.%@", [[NSUUID UUID] UUIDString]];
@@ -152,11 +280,44 @@
     NSString *videoPath = [assetsPath stringByAppendingPathComponent:@"wallpaper.mov"];
     [wallpaperData writeToFile:videoPath atomically:YES];
     
+    // Создаем превью из видео
+    [self createPreviewFromVideo:videoPath atPath:assetsPath];
+    
     // CA Bundle как у Apple
     NSString *caBundlePath = [contentsPath stringByAppendingPathComponent:@"Wallpaper.ca"];
     [self createDirectoryIfNeeded:caBundlePath];
     
     // Создаем main.caml с правильной структурой для iOS 16+
+    [self createCAMLFileAtPath:caBundlePath withName:name];
+    
+    // Создаем wallpaper.plist
+    [self createWallpaperPlistAtPath:caBundlePath withIdentifier:collectionId name:name];
+    
+    // Обновляем индекс
+    [self updatePosterBoardIndex];
+    
+    // Уведомляем систему
+    [self notifyPosterBoardReload];
+    
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"✅ Успешно!" 
+                                                                       message:[NSString stringWithFormat:@"Обои \"%@\" добавлены в коллекции Apple.\n\nПерейдите в Настройки > Обои чтобы выбрать их.", name]
+                                                                preferredStyle:UIAlertControllerStyleAlert];
+        
+        [alert addAction:[UIAlertAction actionWithTitle:@"Открыть настройки" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            [[UIApplication sharedApplication] openURL:[NSURL URLWithString:@"App-Prefs:root=Wallpaper"] 
+                                               options:@{} 
+                                     completionHandler:nil];
+        }]];
+        
+        [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+        
+        [[self getCurrentViewController] presentViewController:alert animated:YES completion:nil];
+    });
+}
+
+// Создание CAML файла
++ (void)createCAMLFileAtPath:(NSString *)caBundlePath withName:(NSString *)name {
     NSString *camlPath = [caBundlePath stringByAppendingPathComponent:@"main.caml"];
     
     // Получаем размер экрана
@@ -196,11 +357,13 @@
         "</plist>", screenWidth, screenHeight];
     
     [camlContent writeToFile:camlPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-    
-    // Создаем wallpaper.plist
+}
+
+// Создание wallpaper.plist
++ (void)createWallpaperPlistAtPath:(NSString *)caBundlePath withIdentifier:(NSString *)identifier name:(NSString *)name {
     NSString *wallpaperPlistPath = [caBundlePath stringByAppendingPathComponent:@"wallpaper.plist"];
     NSDictionary *wallpaperPlist = @{
-        @"CFBundleIdentifier": collectionId,
+        @"CFBundleIdentifier": identifier,
         @"CFBundleName": name,
         @"CFBundleVersion": @1,
         @"subsystem": @"LayeredAnimation",
@@ -210,33 +373,35 @@
         @"previewImage": @"wallpaper_preview.jpg"
     };
     [wallpaperPlist writeToFile:wallpaperPlistPath atomically:YES];
-    
-    // Создаем превью
-    [self createPreviewFromVideo:videoPath atPath:assetsPath];
-    
-    // Обновляем индекс
-    [self updatePosterBoardIndex];
-    
-    // Уведомляем систему
-    [self notifyPosterBoardReload];
 }
 
-// Создание превью из видео
+// Создание превью из видео (исправленная версия без deprecated методов)
 + (void)createPreviewFromVideo:(NSString *)videoPath atPath:(NSString *)assetsPath {
     AVURLAsset *asset = [AVURLAsset assetWithURL:[NSURL fileURLWithPath:videoPath]];
     AVAssetImageGenerator *generator = [[AVAssetImageGenerator alloc] initWithAsset:asset];
     generator.appliesPreferredTrackTransform = YES;
     
     CMTime time = CMTimeMake(1, 30);
-    CGImageRef imageRef = [generator copyCGImageAtTime:time actualTime:nil error:nil];
     
-    if (imageRef) {
-        UIImage *image = [UIImage imageWithCGImage:imageRef];
-        NSData *imageData = UIImageJPEGRepresentation(image, 0.8);
-        NSString *previewPath = [assetsPath stringByAppendingPathComponent:@"wallpaper_preview.jpg"];
-        [imageData writeToFile:previewPath atomically:YES];
-        CGImageRelease(imageRef);
-    }
+    // Используем асинхронный метод вместо deprecated
+    dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
+    
+    [generator generateCGImagesAsynchronouslyForTimes:@[[NSValue valueWithCMTime:time]] 
+                                     completionHandler:^(CMTime requestedTime, 
+                                                         CGImageRef image, 
+                                                         CMTime actualTime, 
+                                                         AVAssetImageGeneratorResult result, 
+                                                         NSError *error) {
+        if (result == AVAssetImageGeneratorSucceeded && image) {
+            UIImage *uiImage = [UIImage imageWithCGImage:image];
+            NSData *imageData = UIImageJPEGRepresentation(uiImage, 0.8);
+            NSString *previewPath = [assetsPath stringByAppendingPathComponent:@"wallpaper_preview.jpg"];
+            [imageData writeToFile:previewPath atomically:YES];
+        }
+        dispatch_semaphore_signal(semaphore);
+    }];
+    
+    dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
 }
 
 // Обновление индекса PosterBoard
@@ -275,29 +440,16 @@
 // Главный метод инжекта
 + (void)injectToPosterBoard:(NSData *)wallpaperData withName:(NSString *)name {
     [self createWallpaperInAppleCollections:wallpaperData withName:name];
-    
-    dispatch_async(dispatch_get_main_queue(), ^{
-        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"✅ Успешно!" 
-                                                                       message:[NSString stringWithFormat:@"Обои \"%@\" добавлены в коллекции Apple.\n\nПерейдите в Настройки > Обои чтобы выбрать их.", name]
-                                                                preferredStyle:UIAlertControllerStyleAlert];
-        
-        [alert addAction:[UIAlertAction actionWithTitle:@"Открыть настройки" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-            [[UIApplication sharedApplication] openURL:[NSURL URLWithString:@"App-Prefs:root=Wallpaper"] 
-                                               options:@{} 
-                                     completionHandler:nil];
-        }]];
-        
-        [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-        
-        [[self getCurrentViewController] presentViewController:alert animated:YES completion:nil];
-    });
 }
 
-// Получение текущего контроллера
+// Получение текущего контроллера (исправленная версия без deprecated)
 + (UIViewController *)getCurrentViewController {
     UIWindow *window = nil;
     
-    if (@available(iOS 13.0, *)) {
+    if (@available(iOS 15.0, *)) {
+        window = [UIApplication sharedApplication].connectedScenes
+            .allObjects.firstObject ? [((UIWindowScene *)[UIApplication sharedApplication].connectedScenes.allObjects.firstObject) windows].firstObject : nil;
+    } else if (@available(iOS 13.0, *)) {
         window = [UIApplication sharedApplication].windows.firstObject;
     } else {
         window = [UIApplication sharedApplication].keyWindow;
@@ -357,6 +509,13 @@
     
     [self setupMenuInView:rootVC.view];
     
+    // Проверяем UDID при запуске
+    if (![UDIDManager getSavedUDID]) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [UDIDManager promptForUDID];
+        });
+    }
+    
     self.window.rootViewController = navController;
     [self.window makeKeyAndVisible];
     
@@ -384,7 +543,7 @@
     
     NSArray *menuItems = @[
         @{@"title": @"🔄 Сбросить коллекции Apple", @"action": @"resetCollections"},
-        @{@"title": @"📱 Мои обои", @"action": @"myWallpapers"},
+        @{@"title": @"📱 Ввести UDID PosterBoard", @"action": @"enterUDID"},
         @{@"title": @"⭐ Избранное", @"action": @"favorites"},
         @{@"title": @"⚙️ Настройки", @"action": @"settings"},
         @{@"title": @"ℹ️ О программе", @"action": @"about"}
@@ -423,7 +582,7 @@
             [PosterBoardManager resetAppleCollections];
             break;
         case 1:
-            [self showMyWallpapers];
+            [UDIDManager promptForUDID];
             break;
         case 2:
             [self showFavorites];
@@ -488,6 +647,17 @@
     badgeLabel.layer.cornerRadius = 10;
     badgeLabel.clipsToBounds = YES;
     
+    // Информация о UDID
+    NSString *udidInfo = [UDIDManager getSavedUDID] ? @"✅ UDID OK" : @"⚠️ Нужен UDID";
+    UILabel *udidLabel = [[UILabel alloc] initWithFrame:CGRectMake(cell.bounds.size.width - 120, 20, 100, 30)];
+    udidLabel.text = udidInfo;
+    udidLabel.textColor = [UIColor whiteColor];
+    udidLabel.backgroundColor = [UIColor colorWithWhite:0 alpha:0.5];
+    udidLabel.textAlignment = NSTextAlignmentCenter;
+    udidLabel.font = [UIFont systemFontOfSize:12];
+    udidLabel.layer.cornerRadius = 10;
+    udidLabel.clipsToBounds = YES;
+    
     // Кнопка установки в коллекции Apple
     UIButton *installButton = [UIButton buttonWithType:UIButtonTypeCustom];
     installButton.frame = CGRectMake(20, cell.bounds.size.height - 100, cell.bounds.size.width - 40, 50);
@@ -501,6 +671,7 @@
     
     [previewView addSubview:titleLabel];
     [previewView addSubview:badgeLabel];
+    [previewView addSubview:udidLabel];
     [previewView addSubview:installButton];
     [cell.contentView addSubview:previewView];
     
@@ -509,6 +680,18 @@
 
 // Установка в коллекции Apple
 - (void)installToAppleCollections:(UIButton *)sender {
+    if (![UDIDManager getSavedUDID]) {
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Требуется UDID" 
+                                                                       message:@"Сначала введите UDID PosterBoard в меню" 
+                                                                preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"Ввести UDID" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            [UDIDManager promptForUDID];
+        }]];
+        [alert addAction:[UIAlertAction actionWithTitle:@"Отмена" style:UIAlertActionStyleCancel handler:nil]];
+        [[PosterBoardManager getCurrentViewController] presentViewController:alert animated:YES completion:nil];
+        return;
+    }
+    
     NSInteger index = sender.tag;
     NSDictionary *video = self.videos[index];
     
@@ -558,15 +741,6 @@
     }];
 }
 
-// Дополнительные методы
-- (void)showMyWallpapers {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Мои обои" 
-                                                                   message:@"Здесь будут ваши установленные обои" 
-                                                            preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-    [[PosterBoardManager getCurrentViewController] presentViewController:alert animated:YES completion:nil];
-}
-
 - (void)showFavorites {
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Избранное" 
                                                                    message:@"Здесь будут избранные обои" 
@@ -577,7 +751,8 @@
 
 - (void)showSettings {
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Настройки" 
-                                                                   message:@"Настройки приложения" 
+                                                                   message:[NSString stringWithFormat:@"Текущий UDID: %@\n\nДля изменения нажмите 'Ввести UDID' в меню", 
+                                                                            [UDIDManager getSavedUDID] ?: @"не задан"] 
                                                             preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
     [[PosterBoardManager getCurrentViewController] presentViewController:alert animated:YES completion:nil];
@@ -585,7 +760,7 @@
 
 - (void)showAbout {
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Tendies Wallpapers" 
-                                                                   message:@"Версия 1.0\n\nПоддержка iOS 16+\nВидео обои в коллекциях Apple" 
+                                                                   message:@"Версия 2.0\n\n✅ Поддержка iOS 16+\n✅ Видео обои в коллекциях Apple\n✅ Ввод UDID через Nugget\n✅ Сброс коллекций Apple\n\nКак получить UDID:\n1. Установите Nugget\n2. Подключите iPhone\n3. Нажмите 'Read UDID'\n4. Найдите PosterBoard UDID" 
                                                             preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
     [[PosterBoardManager getCurrentViewController] presentViewController:alert animated:YES completion:nil];
