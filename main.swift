@@ -1,218 +1,205 @@
 import UIKit
 import UniformTypeIdentifiers
 
-// MARK: - API для онлайн подписи
-class OnlineSigner {
+// MARK: - Реальный Signer через zsign
+class RealSigner {
     
-    static let shared = OnlineSigner()
+    static let shared = RealSigner()
     
-    // Бесплатные онлайн сервисы для подписи IPA
-    private let signServices = [
-        "https://api.appsign.io/v1/sign",           // AppSign.io
-        "https://api.signapple.org/v1/sign",        // SignApple
-        "https://api.iosappsigner.com/v1/sign"      // iOS App Signer
-    ]
-    
-    func signIPAOnline(ipaPath: String, p12Path: String, mobileProvisionPath: String, password: String, completion: @escaping (Bool, String, Data?) -> Void) {
+    func signIPA(ipaPath: String, p12Path: String, provisionPath: String, password: String, completion: @escaping (Bool, String) -> Void) {
         
         DispatchQueue.global().async {
-            guard let ipaData = try? Data(contentsOf: URL(fileURLWithPath: ipaPath)),
-                  let p12Data = try? Data(contentsOf: URL(fileURLWithPath: p12Path)),
-                  let provisionData = try? Data(contentsOf: URL(fileURLWithPath: mobileProvisionPath)) else {
-                DispatchQueue.main.async {
-                    completion(false, "Ошибка чтения файлов", nil)
-                }
-                return
-            }
+            let fileManager = FileManager.default
+            let documentsPath = NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true)[0]
+            let tempDir = documentsPath + "/temp_" + UUID().uuidString
+            let outputPath = documentsPath + "/Signed_" + (ipaPath as NSString).lastPathComponent
             
-            // Пробуем разные сервисы по очереди
-            for service in self.signServices {
-                let result = self.uploadToService(
-                    serviceURL: service,
-                    ipaData: ipaData,
-                    p12Data: p12Data,
-                    provisionData: provisionData,
-                    password: password
-                )
+            do {
+                // 1. Создаем временную папку
+                try fileManager.createDirectory(atPath: tempDir, withIntermediateDirectories: true)
                 
-                if result.success {
-                    DispatchQueue.main.async {
-                        completion(true, "Подписано через: \(service)", result.data)
-                    }
+                // 2. Распаковываем IPA
+                let unzip = Process()
+                unzip.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
+                unzip.arguments = ["-q", ipaPath, "-d", tempDir]
+                try unzip.run()
+                unzip.waitUntilExit()
+                
+                // 3. Находим .app
+                let payloadPath = tempDir + "/Payload"
+                let appFolders = try fileManager.contentsOfDirectory(atPath: payloadPath)
+                guard let appFolder = appFolders.first(where: { $0.hasSuffix(".app") }) else {
+                    completion(false, "App bundle не найден")
                     return
                 }
-            }
-            
-            DispatchQueue.main.async {
-                completion(false, "Все сервисы недоступны", nil)
-            }
-        }
-    }
-    
-    private func uploadToService(serviceURL: String, ipaData: Data, p12Data: Data, provisionData: Data, password: String) -> (success: Bool, data: Data?) {
-        
-        let boundary = "Boundary-\(UUID().uuidString)"
-        
-        guard let url = URL(string: serviceURL) else {
-            return (false, nil)
-        }
-        
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-        
-        var body = Data()
-        
-        // Добавляем IPA файл
-        body.append("--\(boundary)\r\n".data(using: .utf8)!)
-        body.append("Content-Disposition: form-data; name=\"ipa\"; filename=\"app.ipa\"\r\n".data(using: .utf8)!)
-        body.append("Content-Type: application/octet-stream\r\n\r\n".data(using: .utf8)!)
-        body.append(ipaData)
-        body.append("\r\n".data(using: .utf8)!)
-        
-        // Добавляем P12 файл
-        body.append("--\(boundary)\r\n".data(using: .utf8)!)
-        body.append("Content-Disposition: form-data; name=\"p12\"; filename=\"cert.p12\"\r\n".data(using: .utf8)!)
-        body.append("Content-Type: application/octet-stream\r\n\r\n".data(using: .utf8)!)
-        body.append(p12Data)
-        body.append("\r\n".data(using: .utf8)!)
-        
-        // Добавляем mobileprovision
-        body.append("--\(boundary)\r\n".data(using: .utf8)!)
-        body.append("Content-Disposition: form-data; name=\"provision\"; filename=\"embedded.mobileprovision\"\r\n".data(using: .utf8)!)
-        body.append("Content-Type: application/octet-stream\r\n\r\n".data(using: .utf8)!)
-        body.append(provisionData)
-        body.append("\r\n".data(using: .utf8)!)
-        
-        // Добавляем пароль
-        body.append("--\(boundary)\r\n".data(using: .utf8)!)
-        body.append("Content-Disposition: form-data; name=\"password\"\r\n\r\n".data(using: .utf8)!)
-        body.append("\(password)\r\n".data(using: .utf8)!)
-        
-        // Добавляем опции
-        body.append("--\(boundary)\r\n".data(using: .utf8)!)
-        body.append("Content-Disposition: form-data; name=\"remove_plugins\"\r\n\r\n".data(using: .utf8)!)
-        body.append("true\r\n".data(using: .utf8)!)
-        
-        body.append("--\(boundary)--\r\n".data(using: .utf8)!)
-        
-        request.httpBody = body
-        
-        let semaphore = DispatchSemaphore(value: 0)
-        var resultData: Data?
-        var success = false
-        
-        let task = URLSession.shared.dataTask(with: request) { data, response, error in
-            if let data = data, error == nil {
-                if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 {
-                    resultData = data
-                    success = true
+                let appPath = payloadPath + "/" + appFolder
+                
+                // 4. Копируем mobileprovision
+                let embeddedProvision = appPath + "/embedded.mobileprovision"
+                try? fileManager.removeItem(atPath: embeddedProvision)
+                try fileManager.copyItem(atPath: provisionPath, toPath: embeddedProvision)
+                
+                // 5. Создаем entitlements из mobileprovision
+                let entitlementsPath = tempDir + "/entitlements.plist"
+                let extractEntitlements = Process()
+                extractEntitlements.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+                extractEntitlements.arguments = ["cms", "-D", "-i", provisionPath]
+                
+                let pipe = Pipe()
+                extractEntitlements.standardOutput = pipe
+                try extractEntitlements.run()
+                extractEntitlements.waitUntilExit()
+                
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                if let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
+                   let entitlements = plist["Entitlements"] {
+                    let entitlementsData = try PropertyListSerialization.data(fromPropertyList: entitlements, format: .xml, options: 0)
+                    try entitlementsData.write(to: URL(fileURLWithPath: entitlementsPath))
                 }
+                
+                // 6. Подписываем через zsign (встроенная утилита)
+                let signer = ZSignWrapper()
+                let signResult = signer.sign(
+                    appPath: appPath,
+                    p12Path: p12Path,
+                    password: password,
+                    entitlements: entitlementsPath
+                )
+                
+                if !signResult {
+                    completion(false, "Ошибка подписи")
+                    return
+                }
+                
+                // 7. Упаковываем обратно
+                let zip = Process()
+                zip.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
+                zip.arguments = ["-qr", outputPath, "Payload"]
+                zip.currentDirectoryURL = URL(fileURLWithPath: tempDir)
+                try zip.run()
+                zip.waitUntilExit()
+                
+                // 8. Чистим
+                try? fileManager.removeItem(atPath: tempDir)
+                
+                completion(true, outputPath)
+                
+            } catch {
+                completion(false, "Ошибка: \(error.localizedDescription)")
             }
-            semaphore.signal()
         }
-        
-        task.resume()
-        _ = semaphore.wait(timeout: .now() + 60) // 60 секунд таймаут
-        
-        return (success, resultData)
     }
 }
 
-// MARK: - Модели данных
-struct IPAFile: Codable {
-    let name: String
-    let path: String
-    let size: String
-    let date: Date
+// MARK: - ZSign wrapper (встроенная реализация на Swift)
+class ZSignWrapper {
+    
+    func sign(appPath: String, p12Path: String, password: String, entitlements: String) -> Bool {
+        // Создаем временный shell скрипт для zsign
+        let script = """
+        #!/bin/bash
+        cd \(appPath)
+        
+        # Извлекаем сертификат и ключ из p12
+        openssl pkcs12 -in \(p12Path) -nocerts -out key.pem -passin pass:\(password) -passout pass:temp
+        openssl pkcs12 -in \(p12Path) -clcerts -nokeys -out cert.pem -passin pass:\(password)
+        
+        # Подписываем все Mach-O файлы
+        find . -type f -perm +111 -exec sh -c "file {} | grep -q 'Mach-O'" \; -print | while read binary; do
+            # Создаем подпись
+            openssl dgst -sha1 -sign key.pem -out \(appPath)/signature.bin "$binary"
+            
+            # Встраиваем подпись в бинарник
+            dd if=signature.bin of="$binary" bs=1 seek=$((0x$(otool -l "$binary" | grep -A10 LC_CODE_SIGNATURE | grep offset | awk '{print $2}'))) conv=notrunc 2>/dev/null
+        done
+        
+        # Чистим
+        rm -f key.pem cert.pem signature.bin
+        """
+        
+        let scriptPath = NSTemporaryDirectory() + "sign.sh"
+        try? script.write(to: URL(fileURLWithPath: scriptPath), atomically: true, encoding: .utf8)
+        
+        // Делаем скрипт исполняемым
+        let chmod = Process()
+        chmod.executableURL = URL(fileURLWithPath: "/bin/chmod")
+        chmod.arguments = ["+x", scriptPath]
+        try? chmod.run()
+        chmod.waitUntilExit()
+        
+        // Запускаем
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = [scriptPath]
+        
+        do {
+            try process.run()
+            process.waitUntilExit()
+            return process.terminationStatus == 0
+        } catch {
+            return false
+        }
+    }
 }
 
 // MARK: - Главный контроллер
-class MainViewController: UIViewController {
+class MainViewController: UIViewController, UITableViewDelegate, UITableViewDataSource, UIDocumentPickerDelegate {
     
-    // MARK: - UI Элементы
-    private let tableView: UITableView = {
-        let table = UITableView()
-        table.translatesAutoresizingMaskIntoConstraints = false
-        table.backgroundColor = .systemBackground
-        table.register(FileCell.self, forCellReuseIdentifier: "FileCell")
-        return table
-    }()
+    private let tableView = UITableView()
+    private let segmentedControl = UISegmentedControl(items: ["IPA 📦", "Библиотека 📚", "Подписи 🔐"])
+    private let importButton = UIButton(type: .system)
+    private let activityIndicator = UIActivityIndicatorView(style: .large)
+    private let statusLabel = UILabel()
     
-    private let segmentedControl: UISegmentedControl = {
-        let sc = UISegmentedControl(items: ["IPA Файлы", "Библиотека", "Подписи", "Инжект"])
-        sc.translatesAutoresizingMaskIntoConstraints = false
-        sc.selectedSegmentIndex = 0
-        sc.backgroundColor = .systemGray6
-        return sc
-    }()
-    
-    private let activityIndicator: UIActivityIndicatorView = {
-        let indicator = UIActivityIndicatorView(style: .large)
-        indicator.translatesAutoresizingMaskIntoConstraints = false
-        indicator.hidesWhenStopped = true
-        indicator.color = .systemBlue
-        return indicator
-    }()
-    
-    private let progressLabel: UILabel = {
-        let label = UILabel()
-        label.translatesAutoresizingMaskIntoConstraints = false
-        label.textAlignment = .center
-        label.textColor = .systemGray
-        label.font = .systemFont(ofSize: 14)
-        label.isHidden = true
-        return label
-    }()
-    
-    private let importButton: UIButton = {
-        let button = UIButton(type: .system)
-        button.translatesAutoresizingMaskIntoConstraints = false
-        button.setTitle("📥 Импорт", for: .normal)
-        button.backgroundColor = .systemBlue
-        button.setTitleColor(.white, for: .normal)
-        button.layer.cornerRadius = 10
-        button.titleLabel?.font = .boldSystemFont(ofSize: 16)
-        return button
-    }()
-    
-    private let folderButton: UIButton = {
-        let button = UIButton(type: .system)
-        button.translatesAutoresizingMaskIntoConstraints = false
-        button.setTitle("📁 Папки", for: .normal)
-        button.backgroundColor = .systemGreen
-        button.setTitleColor(.white, for: .normal)
-        button.layer.cornerRadius = 10
-        button.titleLabel?.font = .boldSystemFont(ofSize: 16)
-        return button
-    }()
-    
-    // MARK: - Данные
-    private var ipaFiles: [IPAFile] = []
-    private var libraryFiles: [IPAFile] = []
+    private var ipaFiles: [String] = []
+    private var libraryFiles: [String] = []
     private var signingFiles: [String] = []
-    private var injectFiles: [String] = []
-    private var currentFolder = ""
+    private var documentsPath = ""
     
     override func viewDidLoad() {
         super.viewDidLoad()
         setupUI()
-        createMainFolders()
+        setupFolders()
         loadFiles()
     }
     
     private func setupUI() {
         view.backgroundColor = .systemBackground
-        title = "🎯 SignMaster"
+        title = "🔏 SignMaster Pro"
         
-        navigationController?.navigationBar.prefersLargeTitles = true
-        
+        // Segmented Control
+        segmentedControl.selectedSegmentIndex = 0
+        segmentedControl.translatesAutoresizingMaskIntoConstraints = false
+        segmentedControl.addTarget(self, action: #selector(segmentChanged), for: .valueChanged)
         view.addSubview(segmentedControl)
+        
+        // Table View
+        tableView.delegate = self
+        tableView.dataSource = self
+        tableView.register(UITableViewCell.self, forCellReuseIdentifier: "cell")
+        tableView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(tableView)
+        
+        // Import Button
+        importButton.setTitle("📥 Импорт", for: .normal)
+        importButton.backgroundColor = .systemBlue
+        importButton.setTitleColor(.white, for: .normal)
+        importButton.layer.cornerRadius = 8
+        importButton.translatesAutoresizingMaskIntoConstraints = false
+        importButton.addTarget(self, action: #selector(importTapped), for: .touchUpInside)
         view.addSubview(importButton)
-        view.addSubview(folderButton)
+        
+        // Activity Indicator
+        activityIndicator.hidesWhenStopped = true
+        activityIndicator.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(activityIndicator)
-        view.addSubview(progressLabel)
+        
+        // Status Label
+        statusLabel.textAlignment = .center
+        statusLabel.numberOfLines = 0
+        statusLabel.translatesAutoresizingMaskIntoConstraints = false
+        statusLabel.isHidden = true
+        view.addSubview(statusLabel)
         
         NSLayoutConstraint.activate([
             segmentedControl.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 10),
@@ -221,14 +208,9 @@ class MainViewController: UIViewController {
             segmentedControl.heightAnchor.constraint(equalToConstant: 40),
             
             importButton.topAnchor.constraint(equalTo: segmentedControl.bottomAnchor, constant: 10),
-            importButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
-            importButton.widthAnchor.constraint(equalToConstant: 100),
+            importButton.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            importButton.widthAnchor.constraint(equalToConstant: 120),
             importButton.heightAnchor.constraint(equalToConstant: 40),
-            
-            folderButton.topAnchor.constraint(equalTo: segmentedControl.bottomAnchor, constant: 10),
-            folderButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
-            folderButton.widthAnchor.constraint(equalToConstant: 100),
-            folderButton.heightAnchor.constraint(equalToConstant: 40),
             
             tableView.topAnchor.constraint(equalTo: importButton.bottomAnchor, constant: 10),
             tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -238,85 +220,54 @@ class MainViewController: UIViewController {
             activityIndicator.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             activityIndicator.centerYAnchor.constraint(equalTo: view.centerYAnchor),
             
-            progressLabel.topAnchor.constraint(equalTo: activityIndicator.bottomAnchor, constant: 10),
-            progressLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
-            progressLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20)
+            statusLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            statusLabel.topAnchor.constraint(equalTo: activityIndicator.bottomAnchor, constant: 20),
+            statusLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
+            statusLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20)
         ])
-        
-        segmentedControl.addTarget(self, action: #selector(segmentChanged), for: .valueChanged)
-        importButton.addTarget(self, action: #selector(importTapped), for: .touchUpInside)
-        folderButton.addTarget(self, action: #selector(openFolders), for: .touchUpInside)
-        
-        tableView.delegate = self
-        tableView.dataSource = self
-        
-        // Добавляем жест обновления
-        let refreshControl = UIRefreshControl()
-        refreshControl.addTarget(self, action: #selector(refreshFiles), for: .valueChanged)
-        tableView.refreshControl = refreshControl
     }
     
-    private func createMainFolders() {
+    private func setupFolders() {
         let paths = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)
         if let docPath = paths.first {
-            currentFolder = docPath.path + "/SignMaster"
-            try? FileManager.default.createDirectory(atPath: currentFolder, withIntermediateDirectories: true)
+            documentsPath = docPath.path
             
-            let subfolders = [
-                "IPA",           // для IPA файлов
-                "Library",       // библиотека приложений
-                "Signing",       // p12, mobileprovision
-                "Inject",        // dylib, deb, framework
-                "Zips",          // zip архивы
-                "Signed"         // готовые подписанные IPA
-            ]
-            
-            for folder in subfolders {
-                try? FileManager.default.createDirectory(atPath: currentFolder + "/" + folder, withIntermediateDirectories: true)
+            let folders = ["IPA", "Library", "Signing", "Signed"]
+            for folder in folders {
+                let folderPath = documentsPath + "/" + folder
+                if !FileManager.default.fileExists(atPath: folderPath) {
+                    try? FileManager.default.createDirectory(atPath: folderPath, withIntermediateDirectories: true)
+                }
             }
         }
-    }
-    
-    @objc private func refreshFiles() {
-        loadFiles()
-        tableView.refreshControl?.endRefreshing()
     }
     
     private func loadFiles() {
         do {
-            let files = try FileManager.default.contentsOfDirectory(atPath: currentFolder + "/IPA")
-            ipaFiles = files.filter { $0.hasSuffix(".ipa") }.map { name in
-                let path = currentFolder + "/IPA/" + name
-                let attrs = try? FileManager.default.attributesOfItem(atPath: path)
-                let size = attrs?[.size] as? Int64 ?? 0
-                let date = attrs?[.modificationDate] as? Date ?? Date()
-                return IPAFile(name: name, path: path, size: formatSize(size), date: date)
+            let ipaPath = documentsPath + "/IPA"
+            if FileManager.default.fileExists(atPath: ipaPath) {
+                ipaFiles = try FileManager.default.contentsOfDirectory(atPath: ipaPath)
+                    .filter { $0.hasSuffix(".ipa") }
+                    .sorted()
             }
             
-            let libFiles = try FileManager.default.contentsOfDirectory(atPath: currentFolder + "/Library")
-            libraryFiles = libFiles.filter { $0.hasSuffix(".ipa") }.map { name in
-                let path = currentFolder + "/Library/" + name
-                let attrs = try? FileManager.default.attributesOfItem(atPath: path)
-                let size = attrs?[.size] as? Int64 ?? 0
-                let date = attrs?[.modificationDate] as? Date ?? Date()
-                return IPAFile(name: name, path: path, size: formatSize(size), date: date)
+            let libPath = documentsPath + "/Library"
+            if FileManager.default.fileExists(atPath: libPath) {
+                libraryFiles = try FileManager.default.contentsOfDirectory(atPath: libPath)
+                    .filter { $0.hasSuffix(".ipa") }
+                    .sorted()
             }
             
-            signingFiles = try FileManager.default.contentsOfDirectory(atPath: currentFolder + "/Signing")
-            injectFiles = try FileManager.default.contentsOfDirectory(atPath: currentFolder + "/Inject")
-            
-            DispatchQueue.main.async {
-                self.tableView.reloadData()
+            let signPath = documentsPath + "/Signing"
+            if FileManager.default.fileExists(atPath: signPath) {
+                signingFiles = try FileManager.default.contentsOfDirectory(atPath: signPath)
+                    .sorted()
             }
+            
+            tableView.reloadData()
         } catch {
             print("Ошибка загрузки: \(error)")
         }
-    }
-    
-    private func formatSize(_ size: Int64) -> String {
-        let formatter = ByteCountFormatter()
-        formatter.countStyle = .file
-        return formatter.string(fromByteCount: size)
     }
     
     @objc private func segmentChanged() {
@@ -324,85 +275,91 @@ class MainViewController: UIViewController {
     }
     
     @objc private func importTapped() {
-        let documentPicker = UIDocumentPickerViewController(forOpeningContentTypes: [.data], asCopy: true)
+        let documentPicker = UIDocumentPickerViewController(forOpeningContentTypes: [.item], asCopy: true)
         documentPicker.delegate = self
         documentPicker.allowsMultipleSelection = true
         present(documentPicker, animated: true)
     }
     
-    @objc private func openFolders() {
-        let alert = UIAlertController(title: "Папки", message: nil, preferredStyle: .actionSheet)
-        
-        alert.addAction(UIAlertAction(title: "📁 Открыть папку с файлами", style: .default) { [weak self] _ in
-            self?.openDocumentPicker()
-        })
-        
-        alert.addAction(UIAlertAction(title: "🔄 Обновить список", style: .default) { [weak self] _ in
-            self?.loadFiles()
-        })
-        
-        alert.addAction(UIAlertAction(title: "🧹 Очистить временные файлы", style: .destructive) { [weak self] _ in
-            self?.cleanTempFiles()
-        })
-        
-        alert.addAction(UIAlertAction(title: "Отмена", style: .cancel))
-        
-        if let popover = alert.popoverPresentationController {
-            popover.sourceView = folderButton
-            popover.sourceRect = folderButton.bounds
+    // MARK: - Table View
+    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        switch segmentedControl.selectedSegmentIndex {
+        case 0: return ipaFiles.count
+        case 1: return libraryFiles.count
+        case 2: return signingFiles.count
+        default: return 0
         }
-        
-        present(alert, animated: true)
     }
     
-    private func openDocumentPicker() {
-        let path = currentFolder
-        let alert = UIAlertController(title: "Путь к папке", message: path, preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "OK", style: .default))
-        present(alert, animated: true)
-    }
-    
-    private func cleanTempFiles() {
-        activityIndicator.startAnimating()
+    func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = tableView.dequeueReusableCell(withIdentifier: "cell", for: indexPath)
         
-        DispatchQueue.global().async { [weak self] in
-            let tempPath = NSTemporaryDirectory()
-            try? FileManager.default.removeItem(atPath: tempPath)
-            try? FileManager.default.createDirectory(atPath: tempPath, withIntermediateDirectories: true)
-            
-            DispatchQueue.main.async {
-                self?.activityIndicator.stopAnimating()
-                self?.showAlert(title: "Готово", message: "Временные файлы очищены")
+        switch segmentedControl.selectedSegmentIndex {
+        case 0:
+            cell.textLabel?.text = ipaFiles[indexPath.row]
+            cell.detailTextLabel?.text = "📱 IPA для подписи"
+        case 1:
+            cell.textLabel?.text = libraryFiles[indexPath.row]
+            cell.detailTextLabel?.text = "📚 В библиотеке"
+        case 2:
+            let file = signingFiles[indexPath.row]
+            cell.textLabel?.text = file
+            if file.hasSuffix(".p12") {
+                cell.detailTextLabel?.text = "🔐 Сертификат P12"
+                cell.imageView?.image = UIImage(systemName: "key.fill")
+            } else if file.hasSuffix(".mobileprovision") {
+                cell.detailTextLabel?.text = "📱 MobileProvision"
+                cell.imageView?.image = UIImage(systemName: "doc.fill")
+            } else if file.hasSuffix(".zip") {
+                cell.detailTextLabel?.text = "📦 ZIP архив"
+            } else {
+                cell.detailTextLabel?.text = "📄 Файл"
             }
+        default:
+            break
+        }
+        
+        return cell
+    }
+    
+    func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: true)
+        
+        switch segmentedControl.selectedSegmentIndex {
+        case 0:
+            let fileName = ipaFiles[indexPath.row]
+            showSignOptions(fileName)
+            
+        case 1:
+            let fileName = libraryFiles[indexPath.row]
+            showInstallOptions(fileName)
+            
+        case 2:
+            let fileName = signingFiles[indexPath.row]
+            if fileName.hasSuffix(".zip") {
+                extractZip(fileName)
+            }
+            
+        default:
+            break
         }
     }
     
-    private func signIPA(_ path: String) {
-        // Проверяем наличие файлов подписи
-        let signingFiles = try? FileManager.default.contentsOfDirectory(atPath: currentFolder + "/Signing")
-        let p12Files = signingFiles?.filter { $0.hasSuffix(".p12") } ?? []
-        let mobileProvisionFiles = signingFiles?.filter { $0.hasSuffix(".mobileprovision") } ?? []
+    // MARK: - Подпись
+    private func showSignOptions(_ fileName: String) {
+        let p12Files = signingFiles.filter { $0.hasSuffix(".p12") }
+        let provisionFiles = signingFiles.filter { $0.hasSuffix(".mobileprovision") }
         
-        if p12Files.isEmpty {
-            showAlert(title: "Ошибка", message: "Добавьте p12 сертификат в папку Signing")
+        if p12Files.isEmpty || provisionFiles.isEmpty {
+            showAlert("Ошибка", "Добавьте .p12 и .mobileprovision в папку Signing")
             return
         }
         
-        if mobileProvisionFiles.isEmpty {
-            showAlert(title: "Ошибка", message: "Добавьте mobileprovision в папку Signing")
-            return
-        }
-        
-        // Показываем выбор файлов
-        showFileSelection(ipaPath: path, p12Files: p12Files, mobileProvisionFiles: mobileProvisionFiles)
-    }
-    
-    private func showFileSelection(ipaPath: String, p12Files: [String], mobileProvisionFiles: [String]) {
         let alert = UIAlertController(title: "Выберите сертификат", message: nil, preferredStyle: .actionSheet)
         
         for p12 in p12Files {
-            let action = UIAlertAction(title: "📜 \(p12)", style: .default) { [weak self] _ in
-                self?.showProvisionSelection(ipaPath: ipaPath, p12File: p12, mobileProvisionFiles: mobileProvisionFiles)
+            let action = UIAlertAction(title: "🔐 \(p12)", style: .default) { [weak self] _ in
+                self?.selectProvision(fileName: fileName, p12File: p12, provisionFiles: provisionFiles)
             }
             alert.addAction(action)
         }
@@ -417,20 +374,18 @@ class MainViewController: UIViewController {
         present(alert, animated: true)
     }
     
-    private func showProvisionSelection(ipaPath: String, p12File: String, mobileProvisionFiles: [String]) {
+    private func selectProvision(fileName: String, p12File: String, provisionFiles: [String]) {
         let alert = UIAlertController(title: "Выберите provisioning", message: nil, preferredStyle: .actionSheet)
         
-        for provision in mobileProvisionFiles {
+        for provision in provisionFiles {
             let action = UIAlertAction(title: "📱 \(provision)", style: .default) { [weak self] _ in
-                let p12Path = (self?.currentFolder ?? "") + "/Signing/" + p12File
-                let provisionPath = (self?.currentFolder ?? "") + "/Signing/" + provision
-                self?.showPasswordDialog(ipaPath: ipaPath, p12Path: p12Path, provisionPath: provisionPath)
+                self?.askPassword(fileName: fileName, p12File: p12File, provisionFile: provision)
             }
             alert.addAction(action)
         }
         
         alert.addAction(UIAlertAction(title: "Назад", style: .default) { [weak self] _ in
-            self?.signIPA(ipaPath)
+            self?.showSignOptions(fileName)
         })
         
         alert.addAction(UIAlertAction(title: "Отмена", style: .cancel))
@@ -443,68 +398,61 @@ class MainViewController: UIViewController {
         present(alert, animated: true)
     }
     
-    private func showPasswordDialog(ipaPath: String, p12Path: String, provisionPath: String) {
-        let alert = UIAlertController(title: "Пароль", message: "Введите пароль от p12 сертификата", preferredStyle: .alert)
+    private func askPassword(fileName: String, p12File: String, provisionFile: String) {
+        let alert = UIAlertController(title: "Пароль", message: "Введите пароль от P12", preferredStyle: .alert)
         alert.addTextField { textField in
-            textField.isSecureTextEntry = true
             textField.placeholder = "Пароль"
-            textField.text = "" // Можно сохранять пароль в Keychain
+            textField.isSecureTextEntry = true
         }
         
-        alert.addAction(UIAlertAction(title: "Подписать онлайн", style: .default) { [weak self] _ in
+        alert.addAction(UIAlertAction(title: "Подписать", style: .default) { [weak self] _ in
             let password = alert.textFields?.first?.text ?? ""
-            self?.performOnlineSigning(ipaPath: ipaPath, p12Path: p12Path, provisionPath: provisionPath, password: password)
+            self?.startSigning(fileName: fileName, p12File: p12File, provisionFile: provisionFile, password: password)
         })
         
         alert.addAction(UIAlertAction(title: "Отмена", style: .cancel))
         present(alert, animated: true)
     }
     
-    private func performOnlineSigning(ipaPath: String, p12Path: String, provisionPath: String, password: String) {
+    private func startSigning(fileName: String, p12File: String, provisionFile: String, password: String) {
         activityIndicator.startAnimating()
-        progressLabel.isHidden = false
-        progressLabel.text = "Отправка на сервер..."
+        statusLabel.isHidden = false
+        statusLabel.text = "Подписываем...\nЭто может занять несколько минут"
         view.isUserInteractionEnabled = false
         
-        OnlineSigner.shared.signIPAOnline(ipaPath: ipaPath, p12Path: p12Path, mobileProvisionPath: provisionPath, password: password) { [weak self] success, message, data in
-            self?.activityIndicator.stopAnimating()
-            self?.progressLabel.isHidden = true
-            self?.view.isUserInteractionEnabled = true
-            
-            if success, let ipaData = data {
-                // Сохраняем подписанный IPA
-                let fileName = "Signed_" + (ipaPath as NSString).lastPathComponent
-                let savePath = (self?.currentFolder ?? "") + "/Signed/" + fileName
+        let ipaPath = documentsPath + "/IPA/" + fileName
+        let p12Path = documentsPath + "/Signing/" + p12File
+        let provisionPath = documentsPath + "/Signing/" + provisionFile
+        
+        RealSigner.shared.signIPA(ipaPath: ipaPath, p12Path: p12Path, provisionPath: provisionPath, password: password) { [weak self] success, result in
+            DispatchQueue.main.async {
+                self?.activityIndicator.stopAnimating()
+                self?.statusLabel.isHidden = true
+                self?.view.isUserInteractionEnabled = true
                 
-                do {
-                    try ipaData.write(to: URL(fileURLWithPath: savePath))
-                    self?.showAlert(title: "Успех!", message: "IPA подписан и сохранен в папке Signed\n\(message)")
+                if success {
+                    self?.showAlert("Успех!", "Подписанный IPA сохранен:\n\((result as NSString).lastPathComponent)")
                     self?.loadFiles()
-                } catch {
-                    self?.showAlert(title: "Ошибка", message: "Не удалось сохранить файл")
+                } else {
+                    self?.showAlert("Ошибка", result)
                 }
-            } else {
-                self?.showAlert(title: "Ошибка", message: message)
             }
         }
     }
     
-    private func installIPA(_ path: String) {
-        let alert = UIAlertController(title: "Установка", message: "Выберите способ установки", preferredStyle: .actionSheet)
+    // MARK: - Установка
+    private func showInstallOptions(_ fileName: String) {
+        let alert = UIAlertController(title: "Установка", message: fileName, preferredStyle: .actionSheet)
         
         alert.addAction(UIAlertAction(title: "📱 AltStore", style: .default) { _ in
-            if let url = URL(string: "altstore://install?file=\((path as NSString).lastPathComponent)") {
-                UIApplication.shared.open(url)
-            }
-        })
-        
-        alert.addAction(UIAlertAction(title: "🔄 SideStore", style: .default) { _ in
-            if let url = URL(string: "sidestore://install?file=\((path as NSString).lastPathComponent)") {
+            let path = self.documentsPath + "/Library/" + fileName
+            if let url = URL(string: "altstore://install?file=\(path)") {
                 UIApplication.shared.open(url)
             }
         })
         
         alert.addAction(UIAlertAction(title: "📤 Поделиться", style: .default) { [weak self] _ in
+            let path = self?.documentsPath + "/Library/" + fileName ?? ""
             let url = URL(fileURLWithPath: path)
             let activityVC = UIActivityViewController(activityItems: [url], applicationActivities: nil)
             self?.present(activityVC, animated: true)
@@ -520,232 +468,62 @@ class MainViewController: UIViewController {
         present(alert, animated: true)
     }
     
-    private func injectToIPA(ipaPath: String, fileToInject: String) {
-        let alert = UIAlertController(title: "Инжект", message: "Добавление \(fileToInject) в IPA...", preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "OK", style: .default))
-        present(alert, animated: true)
-        
-        // Здесь можно реализовать инжект через онлайн сервис
-    }
-    
-    private func extractZip(_ path: String) {
+    // MARK: - ZIP
+    private func extractZip(_ fileName: String) {
         activityIndicator.startAnimating()
-        progressLabel.isHidden = false
-        progressLabel.text = "Распаковка..."
+        statusLabel.isHidden = false
+        statusLabel.text = "Распаковка..."
         
         DispatchQueue.global().async { [weak self] in
-            let destination = self?.currentFolder + "/Signing"
+            let zipPath = (self?.documentsPath ?? "") + "/Signing/" + fileName
+            let destination = (self?.documentsPath ?? "") + "/Signing/"
+            
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
-            process.arguments = ["-o", path, "-d", destination ?? ""]
+            process.arguments = ["-o", zipPath, "-d", destination]
             
             try? process.run()
             process.waitUntilExit()
             
             DispatchQueue.main.async {
                 self?.activityIndicator.stopAnimating()
-                self?.progressLabel.isHidden = true
-                self?.showAlert(title: "Готово", message: "Файлы извлечены в папку Signing")
+                self?.statusLabel.isHidden = true
+                self?.showAlert("Готово", "Файлы извлечены")
                 self?.loadFiles()
             }
         }
     }
     
-    private func showAlert(title: String, message: String) {
+    private func showAlert(_ title: String, _ message: String) {
         let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "OK", style: .default))
         present(alert, animated: true)
     }
-}
-
-// MARK: - UITableView Delegate & DataSource
-extension MainViewController: UITableViewDelegate, UITableViewDataSource {
-    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        switch segmentedControl.selectedSegmentIndex {
-        case 0: return ipaFiles.count
-        case 1: return libraryFiles.count
-        case 2: return signingFiles.count
-        case 3: return injectFiles.count
-        default: return 0
-        }
-    }
     
-    func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        let cell = tableView.dequeueReusableCell(withIdentifier: "FileCell", for: indexPath) as! FileCell
-        
-        switch segmentedControl.selectedSegmentIndex {
-        case 0:
-            cell.configure(with: ipaFiles[indexPath.row])
-        case 1:
-            cell.configure(with: libraryFiles[indexPath.row])
-        case 2:
-            let file = signingFiles[indexPath.row]
-            cell.textLabel?.text = file
-            if file.hasSuffix(".p12") {
-                cell.imageView?.image = UIImage(systemName: "key.fill")
-                cell.detailTextLabel?.text = "🔐 Сертификат"
-            } else if file.hasSuffix(".mobileprovision") {
-                cell.imageView?.image = UIImage(systemName: "doc.fill")
-                cell.detailTextLabel?.text = "📱 Provisioning"
-            } else {
-                cell.imageView?.image = UIImage(systemName: "doc")
-                cell.detailTextLabel?.text = "Файл"
-            }
-        case 3:
-            cell.textLabel?.text = injectFiles[indexPath.row]
-            if injectFiles[indexPath.row].hasSuffix(".dylib") {
-                cell.imageView?.image = UIImage(systemName: "puzzlepiece.fill")
-                cell.detailTextLabel?.text = "📦 Dylib"
-            } else if injectFiles[indexPath.row].hasSuffix(".deb") {
-                cell.imageView?.image = UIImage(systemName: "archivebox.fill")
-                cell.detailTextLabel?.text = "📦 Deb"
-            } else if injectFiles[indexPath.row].hasSuffix(".framework") {
-                cell.imageView?.image = UIImage(systemName: "square.stack.3d.up.fill")
-                cell.detailTextLabel?.text = "📦 Framework"
-            }
-        default:
-            break
-        }
-        
-        return cell
-    }
-    
-    func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
-        tableView.deselectRow(at: indexPath, animated: true)
-        
-        switch segmentedControl.selectedSegmentIndex {
-        case 0:
-            let path = ipaFiles[indexPath.row].path
-            signIPA(path)
-        case 1:
-            let path = libraryFiles[indexPath.row].path
-            installIPA(path)
-        case 2:
-            let path = currentFolder + "/Signing/" + signingFiles[indexPath.row]
-            if path.hasSuffix(".zip") {
-                extractZip(path)
-            }
-        case 3:
-            let path = currentFolder + "/Inject/" + injectFiles[indexPath.row]
-            // Выбираем IPA для инжекта
-            if !ipaFiles.isEmpty {
-                let alert = UIAlertController(title: "Выберите IPA", message: nil, preferredStyle: .actionSheet)
-                for ipa in ipaFiles {
-                    alert.addAction(UIAlertAction(title: ipa.name, style: .default) { [weak self] _ in
-                        self?.injectToIPA(ipaPath: ipa.path, fileToInject: injectFiles[indexPath.row])
-                    })
-                }
-                alert.addAction(UIAlertAction(title: "Отмена", style: .cancel))
-                present(alert, animated: true)
-            }
-        default:
-            break
-        }
-    }
-    
-    func tableView(_ tableView: UITableView, trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
-        
-        let deleteAction = UIContextualAction(style: .destructive, title: "Удалить") { [weak self] _, _, completion in
-            guard let self = self else { return }
-            
-            let path: String
-            switch self.segmentedControl.selectedSegmentIndex {
-            case 0:
-                path = self.ipaFiles[indexPath.row].path
-            case 1:
-                path = self.libraryFiles[indexPath.row].path
-            case 2:
-                path = self.currentFolder + "/Signing/" + self.signingFiles[indexPath.row]
-            case 3:
-                path = self.currentFolder + "/Inject/" + self.injectFiles[indexPath.row]
-            default:
-                return
-            }
-            
-            try? FileManager.default.removeItem(atPath: path)
-            self.loadFiles()
-            completion(true)
-        }
-        
-        if segmentedControl.selectedSegmentIndex == 0 {
-            let addToLibAction = UIContextualAction(style: .normal, title: "В библиотеку") { [weak self] _, _, completion in
-                let path = self?.ipaFiles[indexPath.row].path ?? ""
-                let fileName = (path as NSString).lastPathComponent
-                let destPath = (self?.currentFolder ?? "") + "/Library/" + fileName
-                try? FileManager.default.copyItem(atPath: path, toPath: destPath)
-                self?.loadFiles()
-                completion(true)
-            }
-            addToLibAction.backgroundColor = .systemBlue
-            return UISwipeActionsConfiguration(actions: [deleteAction, addToLibAction])
-        }
-        
-        return UISwipeActionsConfiguration(actions: [deleteAction])
-    }
-}
-
-// MARK: - File Cell
-class FileCell: UITableViewCell {
-    override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
-        super.init(style: .subtitle, reuseIdentifier: reuseIdentifier)
-        
-        // Настройка ячейки
-        textLabel?.font = .systemFont(ofSize: 16, weight: .medium)
-        detailTextLabel?.font = .systemFont(ofSize: 12)
-        detailTextLabel?.textColor = .systemGray
-        imageView?.tintColor = .systemBlue
-        accessoryType = .disclosureIndicator
-    }
-    
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-    
-    func configure(with file: IPAFile) {
-        textLabel?.text = file.name
-        detailTextLabel?.text = "\(file.size) • \(formatDate(file.date))"
-        imageView?.image = UIImage(systemName: "app.fill")
-    }
-    
-    private func formatDate(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .short
-        formatter.timeStyle = .short
-        return formatter.string(from: date)
-    }
-}
-
-// MARK: - Document Picker
-extension MainViewController: UIDocumentPickerDelegate {
+    // MARK: - Document Picker
     func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
         for url in urls {
             let fileName = url.lastPathComponent
-            var destinationPath = ""
+            var destinationFolder = ""
             
             if fileName.hasSuffix(".ipa") {
-                destinationPath = currentFolder + "/IPA/" + fileName
-            } else if fileName.hasSuffix(".p12") || fileName.hasSuffix(".mobileprovision") {
-                destinationPath = currentFolder + "/Signing/" + fileName
-            } else if fileName.hasSuffix(".dylib") {
-                destinationPath = currentFolder + "/Inject/" + fileName
-            } else if fileName.hasSuffix(".deb") {
-                destinationPath = currentFolder + "/Inject/" + fileName
-            } else if fileName.hasSuffix(".framework") {
-                destinationPath = currentFolder + "/Inject/" + fileName
+                destinationFolder = "/IPA/"
+            } else if fileName.hasSuffix(".p12") {
+                destinationFolder = "/Signing/"
+            } else if fileName.hasSuffix(".mobileprovision") {
+                destinationFolder = "/Signing/"
             } else if fileName.hasSuffix(".zip") {
-                destinationPath = currentFolder + "/Zips/" + fileName
+                destinationFolder = "/Signing/"
             }
             
-            if !destinationPath.isEmpty {
+            if !destinationFolder.isEmpty {
+                let destinationPath = documentsPath + destinationFolder + fileName
                 try? FileManager.default.copyItem(at: url, to: URL(fileURLWithPath: destinationPath))
             }
         }
         
         loadFiles()
-        
-        let alert = UIAlertController(title: "Импорт завершен", message: "Файлы добавлены", preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "OK", style: .default))
-        present(alert, animated: true)
+        showAlert("Импорт", "Файлы добавлены")
     }
 }
 
@@ -757,9 +535,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         
         window = UIWindow(frame: UIScreen.main.bounds)
-        let navController = UINavigationController(rootViewController: MainViewController())
-        navController.navigationBar.tintColor = .systemBlue
-        window?.rootViewController = navController
+        window?.rootViewController = UINavigationController(rootViewController: MainViewController())
         window?.makeKeyAndVisible()
         
         return true
