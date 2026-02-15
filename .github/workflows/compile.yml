@@ -9,21 +9,9 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     
-    - name: Download ImGui
-      run: |
-        curl -L https://github.com/ocornut/imgui/archive/refs/heads/master.zip -o imgui.zip
-        unzip imgui.zip
-        cp imgui-master/*.cpp .
-        cp imgui-master/*.h .
-        cp imgui-master/backends/imgui_impl_opengl3* .
-        cp imgui-master/backends/imgui_impl_osx* .  # Вместо imgui_impl_ios
-        
     - name: Create main.cpp
       run: |
         cat > main.cpp << 'EOF'
-        #include "imgui.h"
-        #include "imgui_impl_osx.h"
-        #include "imgui_impl_opengl3.h"
         #include <objc/runtime.h>
         #include <UIKit/UIKit.h>
         #include <OpenGLES/ES2/gl.h>
@@ -31,7 +19,6 @@ jobs:
         // Состояние меню
         static bool g_menu_visible = true;
         static int g_current_tab = 0;
-        static float g_menu_alpha = 0.9f;
         
         // Состояния чита
         static bool aimbot = false;
@@ -43,81 +30,58 @@ jobs:
         
         static void (*orig_drawRect)(id, SEL, CGRect);
         
+        // Простая отрисовка прямоугольника
+        void DrawRect(float x, float y, float w, float h, float r, float g, float b, float a) {
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            glColor4f(r, g, b, a);
+            
+            GLfloat vertices[] = {
+                x, y,
+                x+w, y,
+                x+w, y+h,
+                x, y+h
+            };
+            
+            glVertexPointer(2, GL_FLOAT, 0, vertices);
+            glEnableClientState(GL_VERTEX_ARRAY);
+            glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+            glDisableClientState(GL_VERTEX_ARRAY);
+        }
+        
+        // Простая отрисовка текста
+        void DrawText(float x, float y, const char* text, float r, float g, float b) {
+            // Заглушка - в реальном проекте нужен шрифт
+        }
+        
         static void hooked_drawRect(id self, SEL _cmd, CGRect rect) {
             orig_drawRect(self, _cmd, rect);
             
             if (g_menu_visible) {
                 [EAGLContext setCurrentContext:[(CAEAGLLayer*)[self layer] context]];
                 
-                ImGui_ImplOpenGL3_NewFrame();
-                ImGui_ImplOSX_NewFrame((__bridge void*)self);
-                ImGui::NewFrame();
+                float mx = 100, my = 100;
+                float mw = 400, mh = 300;
                 
-                // Главное окно
-                ImGui::SetNextWindowSize(ImVec2(600, 400), ImGuiCond_FirstUseEver);
-                ImGui::Begin("Standoff 2 Private Cheat", &g_menu_visible, ImGuiWindowFlags_MenuBar);
+                // Фон меню
+                DrawRect(mx, my, mw, mh, 0.15f, 0.15f, 0.15f, 0.9f);
+                DrawRect(mx, my, mw, 30, 0.3f, 0.4f, 0.9f, 0.9f);
                 
-                // Меню бар
-                if (ImGui::BeginMenuBar()) {
-                    if (ImGui::BeginMenu("Tabs")) {
-                        if (ImGui::MenuItem("Aimbot", NULL, g_current_tab == 0)) g_current_tab = 0;
-                        if (ImGui::MenuItem("Visuals", NULL, g_current_tab == 1)) g_current_tab = 1;
-                        if (ImGui::MenuItem("Misc", NULL, g_current_tab == 2)) g_current_tab = 2;
-                        if (ImGui::MenuItem("Settings", NULL, g_current_tab == 3)) g_current_tab = 3;
-                        ImGui::EndMenu();
+                // Вкладки
+                float tab_w = mw / 4;
+                const char* tabs[] = {"AIM", "VIS", "MISC", "SET"};
+                
+                for (int i = 0; i < 4; i++) {
+                    float tx = mx + i * tab_w;
+                    if (g_current_tab == i) {
+                        DrawRect(tx, my + 30, tab_w, 30, 0.4f, 0.5f, 1.0f, 0.9f);
+                    } else {
+                        DrawRect(tx, my + 30, tab_w, 30, 0.2f, 0.2f, 0.3f, 0.9f);
                     }
-                    ImGui::EndMenuBar();
                 }
                 
-                // Вкладки слева
-                ImGui::BeginChild("left", ImVec2(150, 0), true);
-                ImGui::Text("Menu");
-                ImGui::Separator();
-                if (ImGui::Selectable("Aimbot", g_current_tab == 0)) g_current_tab = 0;
-                if (ImGui::Selectable("Visuals", g_current_tab == 1)) g_current_tab = 1;
-                if (ImGui::Selectable("Misc", g_current_tab == 2)) g_current_tab = 2;
-                if (ImGui::Selectable("Settings", g_current_tab == 3)) g_current_tab = 3;
-                ImGui::EndChild();
-                
-                ImGui::SameLine();
-                
-                // Контент справа
-                ImGui::BeginChild("right", ImVec2(0, 0), true);
-                
-                if (g_current_tab == 0) {
-                    ImGui::Text("Aimbot Settings");
-                    ImGui::Separator();
-                    ImGui::Checkbox("Enable Aimbot", &aimbot);
-                    ImGui::Checkbox("No Recoil", &norecoil);
-                    ImGui::SliderFloat("FOV", &aim_fov, 1.0f, 180.0f);
-                    
-                    const char* bones[] = { "Head", "Chest", "Legs" };
-                    ImGui::Combo("Aim Bone", &aim_bone, bones, IM_ARRAYSIZE(bones));
-                }
-                else if (g_current_tab == 1) {
-                    ImGui::Text("Visual Settings");
-                    ImGui::Separator();
-                    ImGui::Checkbox("Wallhack", &wallhack);
-                    ImGui::Checkbox("ESP", &esp);
-                }
-                else if (g_current_tab == 2) {
-                    ImGui::Text("Misc Settings");
-                    ImGui::Separator();
-                    ImGui::Text("Player Stats:");
-                    ImGui::Text("Health: 100");
-                    ImGui::Text("Kills: 0");
-                }
-                else if (g_current_tab == 3) {
-                    ImGui::Text("Menu Settings");
-                    ImGui::Separator();
-                    ImGui::SliderFloat("Alpha", &g_menu_alpha, 0.5f, 1.0f);
-                }
-                
-                ImGui::EndChild();
-                ImGui::End();
-                
-                ImGui::Render();
-                ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+                // Кнопка закрытия
+                DrawRect(mx + mw - 25, my + 5, 20, 20, 0.8f, 0.2f, 0.2f, 0.9f);
             }
         }
         
@@ -129,16 +93,11 @@ jobs:
                 
                 if (!view) return;
                 
-                IMGUI_CHECKVERSION();
-                ImGui::CreateContext();
-                ImGui::StyleColorsDark();
-                
-                ImGui_ImplOSX_Init((__bridge void*)view);
-                ImGui_ImplOpenGL3_Init("#version 100");
-                
                 Class class = [view class];
                 Method method = class_getInstanceMethod(class, @selector(drawRect:));
                 orig_drawRect = (void *)method_setImplementation(method, (IMP)hooked_drawRect);
+                
+                NSLog(@"[✓] Standoff2 Cheat Loaded");
             });
         }
         EOF
@@ -154,12 +113,6 @@ jobs:
           -framework QuartzCore \
           -x objective-c++ \
           main.cpp \
-          imgui.cpp \
-          imgui_draw.cpp \
-          imgui_tables.cpp \
-          imgui_widgets.cpp \
-          imgui_impl_opengl3.cpp \
-          imgui_impl_osx.mm \
           -o standoff2_cheat.dylib
     
     - name: Upload artifact
