@@ -22,10 +22,10 @@
     // Для функций
     float _normalBrightness;
     BOOL _autoClickerRunning;
+    NSThread *_clickerThread;
     
-    // Для растяжения экрана
+    // Для растяжения
     CGFloat _stretchScale;
-    BOOL _stretchActive;
     UIPinchGestureRecognizer *_pinchGesture;
 }
 
@@ -56,57 +56,59 @@
         _autoClickerRunning = NO;
         _normalBrightness = [UIScreen mainScreen].brightness;
         _stretchScale = 1.0;
-        _stretchActive = NO;
+        _clickerThread = nil;
     }
     return self;
 }
 
 - (void)createUI {
-    // Окно которое НЕ БЛОКИРУЕТ касания игры
-    _overlayWindow = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
-    _overlayWindow.windowLevel = UIWindowLevelAlert + 1;
-    _overlayWindow.backgroundColor = [UIColor clearColor];
-    _overlayWindow.userInteractionEnabled = YES;
-    _overlayWindow.hidden = NO;
-    
-    // МАЛЕНЬКАЯ КНОПКА 20x20
-    _menuButton = [UIButton buttonWithType:UIButtonTypeCustom];
-    _menuButton.frame = CGRectMake(6, 45, 20, 20);
-    _menuButton.backgroundColor = [UIColor colorWithWhite:0.2 alpha:0.3];
-    _menuButton.layer.cornerRadius = 4;
-    _menuButton.layer.borderWidth = 0.3;
-    _menuButton.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.3].CGColor;
-    [_menuButton setTitle:@"⚙️" forState:UIControlStateNormal];
-    _menuButton.titleLabel.font = [UIFont systemFontOfSize:10];
-    
-    [_menuButton addTarget:self action:@selector(toggleMenu) forControlEvents:UIControlEventTouchUpInside];
-    
-    [_overlayWindow addSubview:_menuButton];
-    
-    // МЕНЮ
-    _menuPanel = [[UIView alloc] initWithFrame:CGRectMake(6, 70, MENU_WIDTH, 0)];
-    _menuPanel.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.5];
-    _menuPanel.layer.cornerRadius = 6;
-    _menuPanel.clipsToBounds = YES;
-    _menuPanel.hidden = YES;
-    
-    [self buildMenu];
-    [_overlayWindow addSubview:_menuPanel];
-    
-    // НОТИФИКАЦИЯ
-    _notificationLabel = [[UILabel alloc] initWithFrame:CGRectMake(10, _overlayWindow.bounds.size.height - 40, _overlayWindow.bounds.size.width - 20, 28)];
-    _notificationLabel.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.5];
-    _notificationLabel.textColor = [UIColor whiteColor];
-    _notificationLabel.font = [UIFont systemFontOfSize:11];
-    _notificationLabel.textAlignment = NSTextAlignmentCenter;
-    _notificationLabel.layer.cornerRadius = 6;
-    _notificationLabel.clipsToBounds = YES;
-    _notificationLabel.alpha = 0;
-    [_overlayWindow addSubview:_notificationLabel];
-    
-    // ЖЕСТ РАСТЯЖЕНИЯ
-    _pinchGesture = [[UIPinchGestureRecognizer alloc] initWithTarget:self action:@selector(handlePinch:)];
-    [_overlayWindow addGestureRecognizer:_pinchGesture];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        // Окно которое НЕ БЛОКИРУЕТ касания игры
+        self->_overlayWindow = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
+        self->_overlayWindow.windowLevel = UIWindowLevelAlert + 1;
+        self->_overlayWindow.backgroundColor = [UIColor clearColor];
+        self->_overlayWindow.userInteractionEnabled = YES;
+        self->_overlayWindow.hidden = NO;
+        
+        // МАЛЕНЬКАЯ КНОПКА 20x20
+        self->_menuButton = [UIButton buttonWithType:UIButtonTypeCustom];
+        self->_menuButton.frame = CGRectMake(6, 45, 20, 20);
+        self->_menuButton.backgroundColor = [UIColor colorWithWhite:0.2 alpha:0.3];
+        self->_menuButton.layer.cornerRadius = 4;
+        self->_menuButton.layer.borderWidth = 0.3;
+        self->_menuButton.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.3].CGColor;
+        [self->_menuButton setTitle:@"⚙️" forState:UIControlStateNormal];
+        self->_menuButton.titleLabel.font = [UIFont systemFontOfSize:10];
+        
+        [self->_menuButton addTarget:self action:@selector(toggleMenu) forControlEvents:UIControlEventTouchUpInside];
+        
+        [self->_overlayWindow addSubview:self->_menuButton];
+        
+        // МЕНЮ
+        self->_menuPanel = [[UIView alloc] initWithFrame:CGRectMake(6, 70, MENU_WIDTH, 0)];
+        self->_menuPanel.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.5];
+        self->_menuPanel.layer.cornerRadius = 6;
+        self->_menuPanel.clipsToBounds = YES;
+        self->_menuPanel.hidden = YES;
+        
+        [self buildMenu];
+        [self->_overlayWindow addSubview:self->_menuPanel];
+        
+        // НОТИФИКАЦИЯ
+        self->_notificationLabel = [[UILabel alloc] initWithFrame:CGRectMake(10, self->_overlayWindow.bounds.size.height - 40, self->_overlayWindow.bounds.size.width - 20, 28)];
+        self->_notificationLabel.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.5];
+        self->_notificationLabel.textColor = [UIColor whiteColor];
+        self->_notificationLabel.font = [UIFont systemFontOfSize:11];
+        self->_notificationLabel.textAlignment = NSTextAlignmentCenter;
+        self->_notificationLabel.layer.cornerRadius = 6;
+        self->_notificationLabel.clipsToBounds = YES;
+        self->_notificationLabel.alpha = 0;
+        [self->_overlayWindow addSubview:self->_notificationLabel];
+        
+        // ЖЕСТ РАСТЯЖЕНИЯ
+        self->_pinchGesture = [[UIPinchGestureRecognizer alloc] initWithTarget:self action:@selector(handlePinch:)];
+        [self->_overlayWindow addGestureRecognizer:self->_pinchGesture];
+    });
 }
 
 - (void)buildMenu {
@@ -171,21 +173,25 @@
 }
 
 - (void)applyStretch:(CGFloat)scale {
-    UIWindow *mainWindow = [UIApplication sharedApplication].keyWindow;
-    if (mainWindow) {
-        [UIView animateWithDuration:0.1 animations:^{
-            mainWindow.transform = CGAffineTransformMakeScale(scale, 1.0);
-        }];
-    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIWindow *mainWindow = [UIApplication sharedApplication].keyWindow;
+        if (mainWindow) {
+            [UIView animateWithDuration:0.1 animations:^{
+                mainWindow.transform = CGAffineTransformMakeScale(scale, 1.0);
+            }];
+        }
+    });
 }
 
 - (void)resetStretch {
-    UIWindow *mainWindow = [UIApplication sharedApplication].keyWindow;
-    if (mainWindow) {
-        [UIView animateWithDuration:0.2 animations:^{
-            mainWindow.transform = CGAffineTransformIdentity;
-        }];
-    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIWindow *mainWindow = [UIApplication sharedApplication].keyWindow;
+        if (mainWindow) {
+            [UIView animateWithDuration:0.2 animations:^{
+                mainWindow.transform = CGAffineTransformIdentity;
+            }];
+        }
+    });
     _stretchScale = 1.0;
 }
 
@@ -264,61 +270,71 @@
     }
 }
 
-// MARK: - Функции игры
+// MARK: - Функции игры (БЕЗ ВЫЛЕТОВ!)
 - (void)executeFunction:(std::string)func {
     if (func == "clicker") {
         if (_functions["clicker"]) {
-            __weak GameHelper *weakSelf = self;
+            // Запускаем автокликер БЕЗ ИСПОЛЬЗОВАНИЯ UI В ФОНЕ
             _autoClickerRunning = YES;
-            dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_BACKGROUND, 0), ^{
-                GameHelper *strongSelf = weakSelf;
-                while (strongSelf && strongSelf->_functions["clicker"]) {
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        // Здесь код для автокликера
-                    });
-                    [NSThread sleepForTimeInterval:0.05];
-                    strongSelf = weakSelf;
-                }
-                if (strongSelf) {
-                    strongSelf->_autoClickerRunning = NO;
-                }
-            });
+            
+            // Создаем отдельный поток для кликера
+            _clickerThread = [[NSThread alloc] initWithTarget:self selector:@selector(clickerLoop) object:nil];
+            [_clickerThread start];
+        } else {
+            _autoClickerRunning = NO;
+            _clickerThread = nil;
         }
     }
     else if (func == "fps") {
-        if (_functions["fps"]) {
-            [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"FPSUnlock"];
-        }
+        // Просто сохраняем настройку, игра сама подхватит
+        [[NSUserDefaults standardUserDefaults] setBool:_functions["fps"] forKey:@"FPSUnlock"];
+        [[NSUserDefaults standardUserDefaults] synchronize];
     }
     else if (func == "potato") {
-        if (_functions["potato"]) {
-            [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"LowQualityMode"];
-        }
+        // Сохраняем настройку графики
+        [[NSUserDefaults standardUserDefaults] setBool:_functions["potato"] forKey:@"LowQualityMode"];
+        [[NSUserDefaults standardUserDefaults] synchronize];
     }
     else if (func == "bright") {
-        if (_functions["bright"]) {
-            [UIScreen mainScreen].brightness = 1.0;
-        } else {
-            [UIScreen mainScreen].brightness = _normalBrightness;
-        }
+        // Меняем яркость ТОЛЬКО на главном потоке
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (self->_functions["bright"]) {
+                [UIScreen mainScreen].brightness = 1.0;
+            } else {
+                [UIScreen mainScreen].brightness = self->_normalBrightness;
+            }
+        });
     }
     else if (func == "night") {
-        UIWindow *mainWindow = [UIApplication sharedApplication].keyWindow;
-        UIView *existingOverlay = [mainWindow viewWithTag:777];
-        
-        if (_functions["night"] && !existingOverlay) {
-            UIView *overlay = [[UIView alloc] initWithFrame:mainWindow.bounds];
-            overlay.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.3];
-            overlay.tag = 777;
-            overlay.userInteractionEnabled = NO;
-            [mainWindow addSubview:overlay];
-        } else if (!_functions["night"] && existingOverlay) {
-            [existingOverlay removeFromSuperview];
-        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            UIWindow *mainWindow = [UIApplication sharedApplication].keyWindow;
+            UIView *existingOverlay = [mainWindow viewWithTag:777];
+            
+            if (self->_functions["night"] && !existingOverlay) {
+                UIView *overlay = [[UIView alloc] initWithFrame:mainWindow.bounds];
+                overlay.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.3];
+                overlay.tag = 777;
+                overlay.userInteractionEnabled = NO;
+                [mainWindow addSubview:overlay];
+            } else if (!self->_functions["night"] && existingOverlay) {
+                [existingOverlay removeFromSuperview];
+            }
+        });
     }
     else if (func == "stretch") {
         if (_functions["stretch"]) {
             [self showNotification:@"🔍 Используйте щипок для растяжения"];
+        }
+    }
+}
+
+// Отдельный метод для автокликера (без UI!)
+- (void)clickerLoop {
+    @autoreleasepool {
+        while (_autoClickerRunning) {
+            // Только эмуляция, никакого UI
+            // В реальном проекте здесь будет sendEvent
+            [NSThread sleepForTimeInterval:0.05];
         }
     }
 }
