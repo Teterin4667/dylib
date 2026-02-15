@@ -627,7 +627,6 @@ static void init() {
         NSLog(@"[✓] Standoff2 Cheat v3.0 Loaded Successfully");
     });
 }
-EOF
     
     - name: Compile with Xcode
       run: |
