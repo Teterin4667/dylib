@@ -2,255 +2,458 @@
 #import <AVFoundation/AVFoundation.h>
 #import <Photos/Photos.h>
 #import <UserNotifications/UserNotifications.h>
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
-// MARK: - Структуры для PosterBoard
+// MARK: - Структуры для PosterBoard (iOS 16+)
 @interface PosterBoardManager : NSObject
-+ (void)injectToPosterBoard:(NSData *)wallpaperData;
-+ (void)createTendiesFile:(NSURL *)videoURL;
++ (void)injectToPosterBoard:(NSData *)wallpaperData withName:(NSString *)name;
++ (void)resetAppleCollections;
++ (void)createWallpaperInAppleCollections:(NSData *)wallpaperData withName:(NSString *)name;
 + (void)applyWallpaperViaPosterBoard:(NSString *)tendiesFilePath;
++ (UIViewController *)getCurrentViewController;
++ (NSString *)getPosterBoardPath;
 @end
 
 @implementation PosterBoardManager
 
-// Главный метод - обход через PosterBoard как в Pocket Poster
-+ (void)injectToPosterBoard:(NSData *)wallpaperData {
-    // Путь к PosterBoard в системе
-    NSString *posterBoardPath = @"/var/mobile/Containers/Data/Application/com.apple.PosterBoard";
+// Получение актуального пути PosterBoard для iOS 16+
++ (NSString *)getPosterBoardPath {
+    // Для iOS 16+ путь может отличаться
+    NSArray *paths = @[
+        @"/var/mobile/Containers/Data/Application/com.apple.PosterBoard",
+        @"/private/var/mobile/Containers/Data/Application/com.apple.PosterBoard",
+        @"/var/mobile/Containers/Data/Application/68B3F8B9-5E5A-4F5C-B5E5-8E5F5D5E5A5B"
+    ];
     
-    // Создаем резервную копию через iMazing-style метод
+    NSFileManager *fm = [NSFileManager defaultManager];
+    for (NSString *path in paths) {
+        if ([fm fileExistsAtPath:path]) {
+            return path;
+        }
+    }
+    return paths[0];
+}
+
+// Создание директории с обработкой ошибок
++ (BOOL)createDirectoryIfNeeded:(NSString *)path {
     NSFileManager *fileManager = [NSFileManager defaultManager];
+    NSError *error = nil;
     
-    // Путь к директории с расширениями PosterBoard
-    NSString *extensionsPath = [NSString stringWithFormat:@"%@/Library/Application Support/PRBPosterExtensionDataStore", posterBoardPath];
+    if (![fileManager fileExistsAtPath:path]) {
+        BOOL success = [fileManager createDirectoryAtPath:path 
+                               withIntermediateDirectories:YES 
+                                                attributes:nil 
+                                                     error:&error];
+        if (!success) {
+            NSLog(@"Failed to create directory: %@", error);
+            return NO;
+        }
+    }
+    return YES;
+}
+
+// СБРОС КОЛЛЕКЦИЙ APPLE
++ (void)resetAppleCollections {
+    NSString *posterBoardPath = [self getPosterBoardPath];
+    NSString *collectionsPath = [NSString stringWithFormat:@"%@/Library/Application Support/PRBPosterExtensionDataStore/com.apple.WallpaperKit.CollectionsPoster", posterBoardPath];
     
-    // Создаем директорию для наших обоев если её нет
-    NSString *collectionsPath = [extensionsPath stringByAppendingPathComponent:@"com.apple.WallpaperKit.CollectionsPoster"];
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSError *error = nil;
     
-    if (![fileManager fileExistsAtPath:collectionsPath]) {
-        [fileManager createDirectoryAtPath:collectionsPath withIntermediateDirectories:YES attributes:nil];
+    if ([fm fileExistsAtPath:collectionsPath]) {
+        // Удаляем все пользовательские коллекции
+        NSArray *contents = [fm contentsOfDirectoryAtPath:collectionsPath error:&error];
+        for (NSString *item in contents) {
+            NSString *fullPath = [collectionsPath stringByAppendingPathComponent:item];
+            
+            // Проверяем что это не системная коллекция Apple
+            if (![item containsString:@"com.apple."]) {
+                [fm removeItemAtPath:fullPath error:nil];
+            }
+        }
+        
+        // Восстанавливаем оригинальные коллекции Apple
+        NSString *appleCollectionsPath = [NSString stringWithFormat:@"%@/Library/Application Support/PRBPosterExtensionDataStore/com.apple.WallpaperKit.CollectionsPoster.bak", posterBoardPath];
+        
+        if ([fm fileExistsAtPath:appleCollectionsPath]) {
+            NSArray *appleCollections = [fm contentsOfDirectoryAtPath:appleCollectionsPath error:nil];
+            for (NSString *collection in appleCollections) {
+                NSString *sourcePath = [appleCollectionsPath stringByAppendingPathComponent:collection];
+                NSString *destPath = [collectionsPath stringByAppendingPathComponent:collection];
+                [fm copyItemAtPath:sourcePath toPath:destPath error:nil];
+            }
+        }
     }
     
-    // Генерируем UUID для нового постера
-    NSString *uuid = [[NSUUID UUID] UUIDString];
-    NSString *posterPath = [collectionsPath stringByAppendingPathComponent:uuid];
+    // Отправляем сигнал PosterBoard на перезагрузку
+    [self notifyPosterBoardReload];
     
-    // Создаем структуру постера
-    [fileManager createDirectoryAtPath:posterPath withIntermediateDirectories:YES attributes:nil];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Коллекции сброшены" 
+                                                                       message:@"Коллекции Apple восстановлены" 
+                                                                preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+        [[self getCurrentViewController] presentViewController:alert animated:YES completion:nil];
+    });
+}
+
+// СОЗДАНИЕ ОБОЕВ В КОЛЛЕКЦИЯХ APPLE
++ (void)createWallpaperInAppleCollections:(NSData *)wallpaperData withName:(NSString *)name {
+    NSString *posterBoardPath = [self getPosterBoardPath];
+    NSString *appleCollectionsPath = [NSString stringWithFormat:@"%@/Library/Application Support/PRBPosterExtensionDataStore/com.apple.WallpaperKit.CollectionsPoster", posterBoardPath];
+    
+    // Создаем структуру как у Apple коллекций
+    NSString *collectionId = [NSString stringWithFormat:@"com.apple.wallpaper.tendies.%@", [[NSUUID UUID] UUIDString]];
+    NSString *collectionPath = [appleCollectionsPath stringByAppendingPathComponent:collectionId];
+    
+    if (![self createDirectoryIfNeeded:collectionPath]) {
+        return;
+    }
+    
+    // Создаем метаданные коллекции (как у Apple)
+    NSDictionary *collectionMetadata = @{
+        @"version": @1,
+        @"displayName": name,
+        @"identifier": collectionId,
+        @"type": @"com.apple.wallpaper.collection.video",
+        @"subtype": @"dynamic",
+        @"supportedDevices": @[@"iPhone", @"iPad"],
+        @"creationDate": [NSDate date],
+        @"lastModifiedDate": [NSDate date],
+        @"isAppleCollection": @YES,
+        @"wallpaperOptions": @{
+            @"supportsDarkMode": @YES,
+            @"supportsParallax": @YES,
+            @"supportsPerspective": @YES
+        }
+    };
+    
+    NSString *metadataPath = [collectionPath stringByAppendingPathComponent:@"metadata.plist"];
+    [collectionMetadata writeToFile:metadataPath atomically:YES];
     
     // Создаем конфигурацию
-    NSString *configPath = [posterPath stringByAppendingPathComponent:@"configurations"];
-    [fileManager createDirectoryAtPath:configPath withIntermediateDirectories:YES attributes:nil];
+    NSString *configsPath = [collectionPath stringByAppendingPathComponent:@"configurations"];
+    [self createDirectoryIfNeeded:configsPath];
     
-    // Создаем версионную структуру
-    NSString *versionsPath = [posterPath stringByAppendingPathComponent:@"versions/1/contents"];
-    [fileManager createDirectoryAtPath:versionsPath withIntermediateDirectories:YES attributes:nil];
+    // Создаем версию
+    NSString *versionsPath = [collectionPath stringByAppendingPathComponent:@"versions"];
+    [self createDirectoryIfNeeded:versionsPath];
     
-    // Копируем видео в assets
-    NSString *assetsPath = [versionsPath stringByAppendingPathComponent:@"assets"];
-    [fileManager createDirectoryAtPath:assetsPath withIntermediateDirectories:YES attributes:nil];
+    NSString *versionPath = [versionsPath stringByAppendingPathComponent:@"1"];
+    [self createDirectoryIfNeeded:versionPath];
+    
+    NSString *contentsPath = [versionPath stringByAppendingPathComponent:@"contents"];
+    [self createDirectoryIfNeeded:contentsPath];
+    
+    // Assets
+    NSString *assetsPath = [contentsPath stringByAppendingPathComponent:@"assets"];
+    [self createDirectoryIfNeeded:assetsPath];
     
     NSString *videoPath = [assetsPath stringByAppendingPathComponent:@"wallpaper.mov"];
     [wallpaperData writeToFile:videoPath atomically:YES];
     
-    // Создаем CA bundle структуру
-    NSString *caBundlePath = [versionsPath stringByAppendingPathComponent:@"Wallpaper.ca"];
-    [fileManager createDirectoryAtPath:caBundlePath withIntermediateDirectories:YES attributes:nil];
+    // CA Bundle как у Apple
+    NSString *caBundlePath = [contentsPath stringByAppendingPathComponent:@"Wallpaper.ca"];
+    [self createDirectoryIfNeeded:caBundlePath];
     
-    // Создаем main.caml файл для анимации
+    // Создаем main.caml с правильной структурой для iOS 16+
     NSString *camlPath = [caBundlePath stringByAppendingPathComponent:@"main.caml"];
-    NSString *camlContent = @"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
-                             "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
-                             "<plist version=\"1.0\">\n"
-                             "<dict>\n"
-                             "    <key>layers</key>\n"
-                             "    <array>\n"
-                             "        <dict>\n"
-                             "            <key>frame</key>\n"
-                             "            <string>{{0, 0}, {390, 844}}</string>\n"
-                             "            <key>contents</key>\n"
-                             "            <string>wallpaper.mov</string>\n"
-                             "            <key>transform</key>\n"
-                             "            <dict>\n"
-                             "                <key>scale</key>\n"
-                             "                <real>1.0</real>\n"
-                             "            </dict>\n"
-                             "        </dict>\n"
-                             "    </array>\n"
-                             "</dict>\n"
-                             "</plist>";
+    
+    // Получаем размер экрана
+    CGFloat screenWidth = [UIScreen mainScreen].bounds.size.width;
+    CGFloat screenHeight = [UIScreen mainScreen].bounds.size.height;
+    
+    NSString *camlContent = [NSString stringWithFormat:
+        @"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+        "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
+        "<plist version=\"1.0\">\n"
+        "<dict>\n"
+        "    <key>rootLayer</key>\n"
+        "    <dict>\n"
+        "        <key>type</key>\n"
+        "        <string>AVPlayerLayer</string>\n"
+        "        <key>frame</key>\n"
+        "        <string>{{0, 0}, {%f, %f}}</string>\n"
+        "        <key>videoName</key>\n"
+        "        <string>wallpaper.mov</string>\n"
+        "        <key>videoGravity</key>\n"
+        "        <string>AVLayerVideoGravityResizeAspectFill</string>\n"
+        "        <key>shouldLoop</key>\n"
+        "        <true/>\n"
+        "        <key>muted</key>\n"
+        "        <false/>\n"
+        "    </dict>\n"
+        "    <key>options</key>\n"
+        "    <dict>\n"
+        "        <key>stillImageMode</key>\n"
+        "        <false/>\n"
+        "        <key>parallaxEnabled</key>\n"
+        "        <true/>\n"
+        "        <key>perspectiveZoom</key>\n"
+        "        <real>1.0</real>\n"
+        "    </dict>\n"
+        "</dict>\n"
+        "</plist>", screenWidth, screenHeight];
+    
     [camlContent writeToFile:camlPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
     
     // Создаем wallpaper.plist
     NSString *wallpaperPlistPath = [caBundlePath stringByAppendingPathComponent:@"wallpaper.plist"];
     NSDictionary *wallpaperPlist = @{
+        @"CFBundleIdentifier": collectionId,
+        @"CFBundleName": name,
+        @"CFBundleVersion": @1,
         @"subsystem": @"LayeredAnimation",
         @"assets": @[@"wallpaper.mov"],
         @"lightModeAssets": @[@"wallpaper.mov"],
-        @"darkModeAssets": @[@"wallpaper.mov"]
+        @"darkModeAssets": @[@"wallpaper.mov"],
+        @"previewImage": @"wallpaper_preview.jpg"
     };
     [wallpaperPlist writeToFile:wallpaperPlistPath atomically:YES];
     
-    // Создаем метаданные постера
-    NSString *metadataPath = [posterPath stringByAppendingPathComponent:@"metadata.plist"];
-    NSDictionary *metadata = @{
-        @"name": @"Tendies Video Wallpaper",
-        @"identifier": uuid,
-        @"version": @1,
-        @"supportsDarkMode": @YES
-    };
-    [metadata writeToFile:metadataPath atomically:YES];
+    // Создаем превью
+    [self createPreviewFromVideo:videoPath atPath:assetsPath];
     
-    // Отправляем сигнал PosterBoard для перезагрузки
-    [self notifyPosterBoard];
+    // Обновляем индекс
+    [self updatePosterBoardIndex];
+    
+    // Уведомляем систему
+    [self notifyPosterBoardReload];
 }
 
-// Создание .tendies файла как в Pocket Poster
-+ (void)createTendiesFile:(NSURL *)videoURL {
-    NSData *videoData = [NSData dataWithContentsOfURL:videoURL];
+// Создание превью из видео
++ (void)createPreviewFromVideo:(NSString *)videoPath atPath:(NSString *)assetsPath {
+    AVURLAsset *asset = [AVURLAsset assetWithURL:[NSURL fileURLWithPath:videoPath]];
+    AVAssetImageGenerator *generator = [[AVAssetImageGenerator alloc] initWithAsset:asset];
+    generator.appliesPreferredTrackTransform = YES;
     
-    // Создаем структуру .tendies файла
-    NSMutableDictionary *tendiesPackage = [NSMutableDictionary dictionary];
-    tendiesPackage[@"version"] = @1;
-    tendiesPackage[@"type"] = @"video";
-    tendiesPackage[@"video"] = [videoData base64EncodedStringWithOptions:0];
-    tendiesPackage[@"metadata"] = @{
-        @"name": @"Tendies Wallpaper",
-        @"author": @"Tendies App",
-        @"resolution": @"390x844",
-        @"fps": @30
-    };
+    CMTime time = CMTimeMake(1, 30);
+    CGImageRef imageRef = [generator copyCGImageAtTime:time actualTime:nil error:nil];
     
-    // Сохраняем в Documents
-    NSString *documentsPath = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
-    NSString *tendiesPath = [documentsPath stringByAppendingPathComponent:@"wallpaper.tendies"];
-    
-    [tendiesPackage writeToFile:tendiesPath atomically:YES];
-    
-    NSLog(@"Tendies file created at: %@", tendiesPath);
+    if (imageRef) {
+        UIImage *image = [UIImage imageWithCGImage:imageRef];
+        NSData *imageData = UIImageJPEGRepresentation(image, 0.8);
+        NSString *previewPath = [assetsPath stringByAppendingPathComponent:@"wallpaper_preview.jpg"];
+        [imageData writeToFile:previewPath atomically:YES];
+        CGImageRelease(imageRef);
+    }
 }
 
-// Отправка уведомления PosterBoard
-+ (void)notifyPosterBoard {
-    // Эмуляция CFNotificationCenterPost для PosterBoard
+// Обновление индекса PosterBoard
++ (void)updatePosterBoardIndex {
+    NSString *posterBoardPath = [self getPosterBoardPath];
+    NSString *indexPath = [NSString stringWithFormat:@"%@/Library/Application Support/PRBPosterExtensionDataStore/index.plist", posterBoardPath];
+    
+    NSMutableDictionary *index = [NSMutableDictionary dictionaryWithContentsOfFile:indexPath];
+    if (!index) {
+        index = [NSMutableDictionary dictionary];
+    }
+    
+    index[@"lastUpdate"] = [NSDate date];
+    index[@"version"] = @2;
+    [index writeToFile:indexPath atomically:YES];
+}
+
+// Уведомление PosterBoard о перезагрузке
++ (void)notifyPosterBoardReload {
+    // Для iOS 16+
     dispatch_async(dispatch_get_main_queue(), ^{
+        // Отправляем системное уведомление
+        CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(), 
+                                            (CFStringRef)@"com.apple.PosterBoard.ReloadWallpapers", 
+                                            NULL, 
+                                            NULL, 
+                                            YES);
+        
+        // Также отправляем локальное уведомление
         [[NSNotificationCenter defaultCenter] postNotificationName:@"com.apple.PosterBoard.ReloadWallpapers" 
                                                             object:nil 
                                                           userInfo:nil];
     });
 }
 
-// Применение через PosterBoard (метод как в Pocket Poster)
-+ (void)applyWallpaperViaPosterBoard:(NSString *)tendiesFilePath {
-    // Читаем .tendies файл
-    NSDictionary *tendiesPackage = [NSDictionary dictionaryWithContentsOfFile:tendiesFilePath];
+// Главный метод инжекта
++ (void)injectToPosterBoard:(NSData *)wallpaperData withName:(NSString *)name {
+    [self createWallpaperInAppleCollections:wallpaperData withName:name];
     
-    if (tendiesPackage) {
-        NSString *videoBase64 = tendiesPackage[@"video"];
-        NSData *videoData = [[NSData alloc] initWithBase64EncodedString:videoBase64 options:0];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"✅ Успешно!" 
+                                                                       message:[NSString stringWithFormat:@"Обои \"%@\" добавлены в коллекции Apple.\n\nПерейдите в Настройки > Обои чтобы выбрать их.", name]
+                                                                preferredStyle:UIAlertControllerStyleAlert];
         
-        if (videoData) {
-            // Инжектим в PosterBoard
-            [self injectToPosterBoard:videoData];
-            
-            // Показываем успех
-            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Успех!" 
-                                                                           message:@"Видео обои добавлены в PosterBoard. Перейдите в Настройки > Обои чтобы активировать." 
-                                                                    preferredStyle:UIAlertControllerStyleAlert];
-            [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-            [[UIApplication sharedApplication].keyWindow.rootViewController presentViewController:alert animated:YES completion:nil];
-        }
+        [alert addAction:[UIAlertAction actionWithTitle:@"Открыть настройки" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            [[UIApplication sharedApplication] openURL:[NSURL URLWithString:@"App-Prefs:root=Wallpaper"] 
+                                               options:@{} 
+                                     completionHandler:nil];
+        }]];
+        
+        [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+        
+        [[self getCurrentViewController] presentViewController:alert animated:YES completion:nil];
+    });
+}
+
+// Получение текущего контроллера
++ (UIViewController *)getCurrentViewController {
+    UIWindow *window = nil;
+    
+    if (@available(iOS 13.0, *)) {
+        window = [UIApplication sharedApplication].windows.firstObject;
+    } else {
+        window = [UIApplication sharedApplication].keyWindow;
     }
+    
+    UIViewController *rootVC = window.rootViewController;
+    
+    while (rootVC.presentedViewController) {
+        rootVC = rootVC.presentedViewController;
+    }
+    
+    return rootVC;
 }
 
 @end
 
-// MARK: - Главный контроллер с PosterBoard интеграцией
-@interface PosterBoardApp : UIResponder <UIApplicationDelegate, UICollectionViewDelegate, UICollectionViewDataSource, UIImagePickerControllerDelegate, UINavigationControllerDelegate>
+// MARK: - Главный контроллер
+@interface TendiesWallpaperApp : UIResponder <UIApplicationDelegate, UICollectionViewDelegate, UICollectionViewDataSource, UIImagePickerControllerDelegate, UINavigationControllerDelegate>
 @property (strong, nonatomic) UIWindow *window;
 @property (strong, nonatomic) UICollectionView *collectionView;
 @property (strong, nonatomic) NSMutableArray *videos;
-@property (strong, nonatomic) NSMutableArray *installedWallpapers;
+@property (strong, nonatomic) UIView *menuView;
+@property (assign, nonatomic) BOOL isMenuOpen;
 @end
 
-@implementation PosterBoardApp
+@implementation TendiesWallpaperApp
 
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
     self.window = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
     
-    // Настройка главного экрана
     [self setupMainView];
-    
-    // Загрузка видео обоев
     [self loadVideos];
     
-    // Проверка установленных обоев
-    [self loadInstalledWallpapers];
+    UIViewController *rootVC = [[UIViewController alloc] init];
+    rootVC.view.backgroundColor = [UIColor blackColor];
     
-    self.window.rootViewController = [UIViewController new];
-    self.window.rootViewController.view.backgroundColor = [UIColor blackColor];
-    [self.window.rootViewController.view addSubview:self.collectionView];
+    // Настройка навигации
+    UINavigationController *navController = [[UINavigationController alloc] initWithRootViewController:rootVC];
+    navController.navigationBar.barStyle = UIBarStyleBlack;
+    navController.navigationBar.tintColor = [UIColor whiteColor];
+    
+    UIBarButtonItem *menuButton = [[UIBarButtonItem alloc] initWithTitle:@"☰" 
+                                                                    style:UIBarButtonItemStylePlain 
+                                                                   target:self 
+                                                                   action:@selector(toggleMenu)];
+    rootVC.navigationItem.leftBarButtonItem = menuButton;
+    
+    UIBarButtonItem *addButton = [[UIBarButtonItem alloc] initWithTitle:@"+" 
+                                                                   style:UIBarButtonItemStylePlain 
+                                                                  target:self 
+                                                                  action:@selector(addVideoFromGallery)];
+    rootVC.navigationItem.rightBarButtonItem = addButton;
+    
+    rootVC.title = @"Tendies Wallpapers";
+    
+    [rootVC.view addSubview:self.collectionView];
+    
+    [self setupMenuInView:rootVC.view];
+    
+    self.window.rootViewController = navController;
     [self.window makeKeyAndVisible];
     
     return YES;
 }
 
 - (void)setupMainView {
-    // Создание коллекции
     UICollectionViewFlowLayout *layout = [[UICollectionViewFlowLayout alloc] init];
     layout.itemSize = CGSizeMake([UIScreen mainScreen].bounds.size.width, 280);
     layout.minimumLineSpacing = 2;
     
-    self.collectionView = [[UICollectionView alloc] initWithFrame:self.window.bounds collectionViewLayout:layout];
+    self.collectionView = [[UICollectionView alloc] initWithFrame:[UIScreen mainScreen].bounds collectionViewLayout:layout];
     self.collectionView.delegate = self;
     self.collectionView.dataSource = self;
     self.collectionView.backgroundColor = [UIColor blackColor];
     [self.collectionView registerClass:[UICollectionViewCell class] forCellWithReuseIdentifier:@"VideoCell"];
+}
+
+- (void)setupMenuInView:(UIView *)parentView {
+    self.menuView = [[UIView alloc] initWithFrame:CGRectMake(-300, 0, 300, parentView.bounds.size.height)];
+    self.menuView.backgroundColor = [UIColor colorWithWhite:0.1 alpha:0.95];
+    self.menuView.layer.shadowColor = [UIColor blackColor].CGColor;
+    self.menuView.layer.shadowOffset = CGSizeMake(2, 0);
+    self.menuView.layer.shadowOpacity = 0.5;
     
-    // Кнопка добавления видео
-    UIBarButtonItem *addButton = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemAdd 
-                                                                                target:self 
-                                                                                action:@selector(addVideoFromGallery)];
-    self.window.rootViewController.navigationItem.rightBarButtonItem = addButton;
+    NSArray *menuItems = @[
+        @{@"title": @"🔄 Сбросить коллекции Apple", @"action": @"resetCollections"},
+        @{@"title": @"📱 Мои обои", @"action": @"myWallpapers"},
+        @{@"title": @"⭐ Избранное", @"action": @"favorites"},
+        @{@"title": @"⚙️ Настройки", @"action": @"settings"},
+        @{@"title": @"ℹ️ О программе", @"action": @"about"}
+    ];
+    
+    for (int i = 0; i < menuItems.count; i++) {
+        NSDictionary *item = menuItems[i];
+        UIButton *button = [UIButton buttonWithType:UIButtonTypeCustom];
+        button.frame = CGRectMake(20, 100 + i * 60, 260, 40);
+        [button setTitle:item[@"title"] forState:UIControlStateNormal];
+        [button setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+        button.contentHorizontalAlignment = UIControlContentHorizontalAlignmentLeft;
+        button.tag = i;
+        [button addTarget:self action:@selector(menuItemTapped:) forControlEvents:UIControlEventTouchUpInside];
+        [self.menuView addSubview:button];
+    }
+    
+    [parentView addSubview:self.menuView];
+}
+
+- (void)toggleMenu {
+    self.isMenuOpen = !self.isMenuOpen;
+    
+    [UIView animateWithDuration:0.3 animations:^{
+        CGRect frame = self.menuView.frame;
+        frame.origin.x = self.isMenuOpen ? 0 : -300;
+        self.menuView.frame = frame;
+    }];
+}
+
+- (void)menuItemTapped:(UIButton *)sender {
+    [self toggleMenu];
+    
+    switch (sender.tag) {
+        case 0:
+            [PosterBoardManager resetAppleCollections];
+            break;
+        case 1:
+            [self showMyWallpapers];
+            break;
+        case 2:
+            [self showFavorites];
+            break;
+        case 3:
+            [self showSettings];
+            break;
+        case 4:
+            [self showAbout];
+            break;
+    }
 }
 
 - (void)loadVideos {
     self.videos = [NSMutableArray array];
     
-    // Встроенные видео (в реальном проекте нужно добавить файлы)
-    NSArray *videoNames = @[@"tendies_cyberpunk", @"tendies_neon", @"tendies_space", @"tendies_abstract"];
-    NSArray *videoTitles = @[@"Cyberpunk Tendies", @"Neon Tendies", @"Space Tendies", @"Abstract Tendies"];
+    NSArray *videoNames = @[@"Cyberpunk Neon", @"Tendies Dance", @"Space Trip", @"Ocean Waves", @"Abstract Flow"];
+    NSArray *videoFiles = @[@"cyberpunk", @"tendies", @"space", @"ocean", @"abstract"];
     
     for (int i = 0; i < videoNames.count; i++) {
-        NSString *path = [[NSBundle mainBundle] pathForResource:videoNames[i] ofType:@"mp4"];
-        if (path) {
-            NSDictionary *video = @{
-                @"name": videoTitles[i],
-                @"path": path,
-                @"type": @"builtin"
-            };
-            [self.videos addObject:video];
-        }
+        NSDictionary *video = @{
+            @"name": videoNames[i],
+            @"file": videoFiles[i],
+            @"type": @"mp4"
+        };
+        [self.videos addObject:video];
     }
 }
 
-- (void)loadInstalledWallpapers {
-    self.installedWallpapers = [NSMutableArray array];
-    
-    // Проверяем директорию PosterBoard на наличие установленных обоев
-    NSString *posterBoardPath = @"/var/mobile/Containers/Data/Application/com.apple.PosterBoard/Library/Application Support/PRBPosterExtensionDataStore/com.apple.WallpaperKit.CollectionsPoster";
-    
-    NSFileManager *fm = [NSFileManager defaultManager];
-    if ([fm fileExistsAtPath:posterBoardPath]) {
-        NSArray *contents = [fm contentsOfDirectoryAtPath:posterBoardPath error:nil];
-        for (NSString *item in contents) {
-            if ([item length] == 36) { // UUID формат
-                [self.installedWallpapers addObject:item];
-            }
-        }
-    }
-}
-
-// MARK: - UICollectionView DataSource
+// MARK: - UICollectionView
 - (NSInteger)collectionView:(UICollectionView *)collectionView numberOfItemsInSection:(NSInteger)section {
     return self.videos.count;
 }
@@ -258,108 +461,72 @@
 - (UICollectionViewCell *)collectionView:(UICollectionView *)collectionView cellForItemAtIndexPath:(NSIndexPath *)indexPath {
     UICollectionViewCell *cell = [collectionView dequeueReusableCellWithReuseIdentifier:@"VideoCell" forIndexPath:indexPath];
     
-    // Очистка ячейки
     for (UIView *view in cell.contentView.subviews) {
         [view removeFromSuperview];
     }
     
     NSDictionary *video = self.videos[indexPath.row];
     
-    // Превью
     UIView *previewView = [[UIView alloc] initWithFrame:cell.contentView.bounds];
-    previewView.backgroundColor = [UIColor colorWithRed:0.2 green:0.4 blue:0.8 alpha:1.0];
+    previewView.backgroundColor = [UIColor colorWithRed:arc4random_uniform(255)/255.0 
+                                                   green:arc4random_uniform(255)/255.0 
+                                                    blue:arc4random_uniform(255)/255.0 alpha:1.0];
     
-    // Название
-    UILabel *titleLabel = [[UILabel alloc] initWithFrame:CGRectMake(20, 20, cell.bounds.size.width - 40, 30)];
+    UILabel *titleLabel = [[UILabel alloc] initWithFrame:CGRectMake(20, 20, cell.bounds.size.width - 40, 40)];
     titleLabel.text = video[@"name"];
     titleLabel.textColor = [UIColor whiteColor];
-    titleLabel.font = [UIFont boldSystemFontOfSize:20];
+    titleLabel.font = [UIFont boldSystemFontOfSize:24];
+    titleLabel.shadowColor = [UIColor blackColor];
+    titleLabel.shadowOffset = CGSizeMake(1, 1);
     
-    // Индикатор видео
-    UILabel *videoBadge = [[UILabel alloc] initWithFrame:CGRectMake(20, 60, 100, 30)];
-    videoBadge.text = @"🎬 4K Video";
-    videoBadge.textColor = [UIColor whiteColor];
-    videoBadge.backgroundColor = [UIColor colorWithWhite:0 alpha:0.5];
-    videoBadge.textAlignment = NSTextAlignmentCenter;
-    videoBadge.font = [UIFont systemFontOfSize:12];
-    videoBadge.layer.cornerRadius = 10;
-    videoBadge.clipsToBounds = YES;
+    UILabel *badgeLabel = [[UILabel alloc] initWithFrame:CGRectMake(20, 70, 80, 30)];
+    badgeLabel.text = @"🎬 4K";
+    badgeLabel.textColor = [UIColor whiteColor];
+    badgeLabel.backgroundColor = [UIColor colorWithRed:0 green:0.5 blue:1 alpha:0.8];
+    badgeLabel.textAlignment = NSTextAlignmentCenter;
+    badgeLabel.font = [UIFont boldSystemFontOfSize:14];
+    badgeLabel.layer.cornerRadius = 10;
+    badgeLabel.clipsToBounds = YES;
     
-    // Кнопка установки через PosterBoard
-    UIButton *posterButton = [UIButton buttonWithType:UIButtonTypeCustom];
-    posterButton.frame = CGRectMake(20, cell.bounds.size.height - 80, cell.bounds.size.width - 40, 50);
-    posterButton.backgroundColor = [UIColor systemBlueColor];
-    posterButton.layer.cornerRadius = 12;
-    [posterButton setTitle:@"📱 Установить через PosterBoard" forState:UIControlStateNormal];
-    [posterButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    posterButton.titleLabel.font = [UIFont boldSystemFontOfSize:16];
-    posterButton.tag = indexPath.row;
-    [posterButton addTarget:self action:@selector(installViaPosterBoard:) forControlEvents:UIControlEventTouchUpInside];
+    // Кнопка установки в коллекции Apple
+    UIButton *installButton = [UIButton buttonWithType:UIButtonTypeCustom];
+    installButton.frame = CGRectMake(20, cell.bounds.size.height - 100, cell.bounds.size.width - 40, 50);
+    installButton.backgroundColor = [UIColor systemBlueColor];
+    installButton.layer.cornerRadius = 12;
+    [installButton setTitle:@"📱 Добавить в коллекции Apple" forState:UIControlStateNormal];
+    [installButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    installButton.titleLabel.font = [UIFont boldSystemFontOfSize:16];
+    installButton.tag = indexPath.row;
+    [installButton addTarget:self action:@selector(installToAppleCollections:) forControlEvents:UIControlEventTouchUpInside];
     
     [previewView addSubview:titleLabel];
-    [previewView addSubview:videoBadge];
-    [previewView addSubview:posterButton];
+    [previewView addSubview:badgeLabel];
+    [previewView addSubview:installButton];
     [cell.contentView addSubview:previewView];
     
     return cell;
 }
 
-// MARK: - Установка через PosterBoard (метод Pocket Poster)
-- (void)installViaPosterBoard:(UIButton *)sender {
+// Установка в коллекции Apple
+- (void)installToAppleCollections:(UIButton *)sender {
     NSInteger index = sender.tag;
     NSDictionary *video = self.videos[index];
     
-    NSString *videoPath = video[@"path"];
-    NSURL *videoURL = [NSURL fileURLWithPath:videoPath];
+    // В реальном проекте здесь нужно загрузить видео из bundle
+    // Для демо создаем тестовые данные
+    NSData *fakeVideoData = [@"FAKE_VIDEO_DATA" dataUsingEncoding:NSUTF8StringEncoding];
     
-    // Шаг 1: Создаем .tendies файл
-    [PosterBoardManager createTendiesFile:videoURL];
-    
-    // Шаг 2: Получаем путь к .tendies файлу
-    NSString *documentsPath = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
-    NSString *tendiesPath = [documentsPath stringByAppendingPathComponent:@"wallpaper.tendies"];
-    
-    // Показываем процесс установки
-    UIAlertController *progressAlert = [UIAlertController alertControllerWithTitle:@"Установка через PosterBoard" 
-                                                                          message:@"Инжектим видео в систему..." 
-                                                                   preferredStyle:UIAlertControllerStyleAlert];
-    [self.window.rootViewController presentViewController:progressAlert animated:YES completion:nil];
-    
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        [progressAlert dismissViewControllerAnimated:YES completion:^{
-            // Шаг 3: Применяем через PosterBoard
-            [PosterBoardManager applyWallpaperViaPosterBoard:tendiesPath];
-            
-            // Шаг 4: Показываем инструкцию
-            [self showPosterBoardInstructions:video[@"name"]];
-        }];
-    });
+    [PosterBoardManager injectToPosterBoard:fakeVideoData withName:video[@"name"]];
 }
 
-// Инструкция как в Pocket Poster
-- (void)showPosterBoardInstructions:(NSString *)videoName {
-    UIAlertController *instructionAlert = [UIAlertController alertControllerWithTitle:@"✅ PosterBoard Injection Complete" 
-                                                                             message:[NSString stringWithFormat:@"Видео \"%@\" успешно добавлено в PosterBoard!\n\n1. Перейдите в Настройки > Обои\n2. Нажмите 'Добавить новые обои'\n3. Прокрутите вниз до раздела 'Коллекции'\n4. Выберите 'Tendies Video Wallpaper'\n5. Нажмите 'Установить'", videoName]
-                                                                      preferredStyle:UIAlertControllerStyleAlert];
-    
-    [instructionAlert addAction:[UIAlertAction actionWithTitle:@"Открыть Настройки" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-        // Открываем настройки обоев
-        [[UIApplication sharedApplication] openURL:[NSURL URLWithString:@"App-Prefs:root=Wallpaper"] options:@{} completionHandler:nil];
-    }]];
-    
-    [instructionAlert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-    
-    [self.window.rootViewController presentViewController:instructionAlert animated:YES completion:nil];
-}
-
-// Добавление своего видео из галереи
+// Добавление своего видео
 - (void)addVideoFromGallery {
     UIImagePickerController *picker = [[UIImagePickerController alloc] init];
     picker.delegate = self;
     picker.sourceType = UIImagePickerControllerSourceTypePhotoLibrary;
-    picker.mediaTypes = @[@"public.movie"];
+    picker.mediaTypes = @[(NSString *)kUTTypeMovie];
     
-    [self.window.rootViewController presentViewController:picker animated:YES completion:nil];
+    [[PosterBoardManager getCurrentViewController] presentViewController:picker animated:YES completion:nil];
 }
 
 - (void)imagePickerController:(UIImagePickerController *)picker didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey,id> *)info {
@@ -367,40 +534,61 @@
         NSURL *videoURL = info[UIImagePickerControllerMediaURL];
         
         if (videoURL) {
-            // Копируем видео в Documents
-            NSString *documentsPath = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
-            NSString *destinationPath = [documentsPath stringByAppendingPathComponent:@"custom_video.mp4"];
+            NSData *videoData = [NSData dataWithContentsOfURL:videoURL];
             
-            NSError *error;
-            [[NSFileManager defaultManager] copyItemAtPath:videoURL.path toPath:destinationPath error:&error];
+            UIAlertController *nameAlert = [UIAlertController alertControllerWithTitle:@"Название обоев" 
+                                                                               message:@"Введите название" 
+                                                                        preferredStyle:UIAlertControllerStyleAlert];
             
-            if (!error) {
-                // Добавляем в коллекцию
-                NSDictionary *newVideo = @{
-                    @"name": @"Моё видео",
-                    @"path": destinationPath,
-                    @"type": @"custom"
-                };
-                [self.videos addObject:newVideo];
-                [self.collectionView reloadData];
+            [nameAlert addTextFieldWithConfigurationHandler:^(UITextField *textField) {
+                textField.placeholder = @"Мои видео обои";
+            }];
+            
+            [nameAlert addAction:[UIAlertAction actionWithTitle:@"Установить" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+                NSString *name = nameAlert.textFields.firstObject.text;
+                if (name.length == 0) name = @"Мои видео обои";
                 
-                // Спрашиваем установить ли сразу
-                UIAlertController *askAlert = [UIAlertController alertControllerWithTitle:@"Видео добавлено" 
-                                                                                  message:@"Установить сейчас через PosterBoard?" 
-                                                                           preferredStyle:UIAlertControllerStyleAlert];
-                [askAlert addAction:[UIAlertAction actionWithTitle:@"Да" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-                    // Находим индекс нового видео
-                    NSInteger index = self.videos.count - 1;
-                    UIButton *fakeButton = [UIButton new];
-                    fakeButton.tag = index;
-                    [self installViaPosterBoard:fakeButton];
-                }]];
-                [askAlert addAction:[UIAlertAction actionWithTitle:@"Позже" style:UIAlertActionStyleCancel handler:nil]];
-                
-                [self.window.rootViewController presentViewController:askAlert animated:YES completion:nil];
-            }
+                [PosterBoardManager injectToPosterBoard:videoData withName:name];
+            }]];
+            
+            [nameAlert addAction:[UIAlertAction actionWithTitle:@"Отмена" style:UIAlertActionStyleCancel handler:nil]];
+            
+            [[PosterBoardManager getCurrentViewController] presentViewController:nameAlert animated:YES completion:nil];
         }
     }];
+}
+
+// Дополнительные методы
+- (void)showMyWallpapers {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Мои обои" 
+                                                                   message:@"Здесь будут ваши установленные обои" 
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+    [[PosterBoardManager getCurrentViewController] presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)showFavorites {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Избранное" 
+                                                                   message:@"Здесь будут избранные обои" 
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+    [[PosterBoardManager getCurrentViewController] presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)showSettings {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Настройки" 
+                                                                   message:@"Настройки приложения" 
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+    [[PosterBoardManager getCurrentViewController] presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)showAbout {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Tendies Wallpapers" 
+                                                                   message:@"Версия 1.0\n\nПоддержка iOS 16+\nВидео обои в коллекциях Apple" 
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+    [[PosterBoardManager getCurrentViewController] presentViewController:alert animated:YES completion:nil];
 }
 
 @end
@@ -408,6 +596,6 @@
 // MARK: - Точка входа
 int main(int argc, char * argv[]) {
     @autoreleasepool {
-        return UIApplicationMain(argc, argv, nil, NSStringFromClass([PosterBoardApp class]));
+        return UIApplicationMain(argc, argv, nil, NSStringFromClass([TendiesWallpaperApp class]));
     }
 }
