@@ -283,7 +283,7 @@ jobs:
         chmod +x inject.sh
           
     - name: Upload artifacts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: Standoff2-ESP
         path: |
