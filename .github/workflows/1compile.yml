@@ -1,35 +1,331 @@
-name: Build iOS Dylib
+name: Build Standoff2 ESP
 
 on:
   push:
     branches: [ main ]
   pull_request:
     branches: [ main ]
-  workflow_dispatch:
+  workflow_dispatch: # Ручной запуск
 
 jobs:
   build:
     runs-on: macos-latest
     
     steps:
-    - uses: actions/checkout@v4
-    
-    - name: Build Dylib
+    - name: Checkout repository
+      uses: actions/checkout@v3
+      
+    - name: Set up Xcode
+      uses: maxim-lobanov/setup-xcode@v1
+      with:
+        xcode-version: '16.4'
+      
+    - name: Install dependencies
       run: |
-        clang++ -std=c++11 -dynamiclib \
+        brew install ldid
+        brew install insert_dylib
+        pip3 install progress
+        
+    - name: Create ESP source files
+      run: |
+        mkdir -p ESP
+        cat > ESP/ESP.m << 'EOF'
+#import <Foundation/Foundation.h>
+#import <UIKit/UIKit.h>
+#import <mach/mach.h>
+#import <objc/runtime.h>
+
+// Оффсеты для Standoff 2 0.10.11
+#define OFFSET_ENTITY_LIST    0x4E8A2B4
+#define OFFSET_PLAYER_COUNT   0x4E8A2B8
+#define OFFSET_LOCAL_PLAYER   0x4E8A2AC
+#define OFFSET_POSITION_X     0xA0
+#define OFFSET_POSITION_Y     0xA4
+#define OFFSET_POSITION_Z     0xA8
+#define OFFSET_HEALTH         0x1C0
+#define OFFSET_TEAM           0x140
+#define OFFSET_NAME           0x38
+#define OFFSET_VISIBLE        0x360
+
+@interface ESPRenderer : NSObject
++ (instancetype)sharedInstance;
+- (void)drawESP;
+@end
+
+@implementation ESPRenderer {
+    NSMutableArray *players;
+    UIView *overlayView;
+    CADisplayLink *displayLink;
+}
+
++ (instancetype)sharedInstance {
+    static ESPRenderer *instance = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        instance = [[ESPRenderer alloc] init];
+    });
+    return instance;
+}
+
+- (instancetype)init {
+    self = [super init];
+    if (self) {
+        players = [NSMutableArray new];
+        [self setupOverlay];
+    }
+    return self;
+}
+
+- (void)setupOverlay {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIWindow *keyWindow = [UIApplication sharedApplication].keyWindow;
+        if (!keyWindow) return;
+        
+        self->overlayView = [[UIView alloc] initWithFrame:keyWindow.bounds];
+        self->overlayView.backgroundColor = [UIColor clearColor];
+        self->overlayView.userInteractionEnabled = NO;
+        self->overlayView.tag = 1337;
+        
+        [keyWindow addSubview:self->overlayView];
+        [keyWindow bringSubviewToFront:self->overlayView];
+        
+        self->displayLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(updateESP)];
+        [self->displayLink addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
+    });
+}
+
+- (void)updateESP {
+    [self readMemory];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self->overlayView setNeedsDisplay];
+    });
+}
+
+- (void)readMemory {
+    task_t task;
+    pid_t pid = [self getPid:@"Standoff2"];
+    if (pid == 0) return;
+    
+    task_for_pid(mach_task_self(), pid, &task);
+    if (task == MACH_PORT_NULL) return;
+    
+    uint64_t base = [self getBaseAddress:task];
+    if (base == 0) {
+        mach_port_deallocate(mach_task_self(), task);
+        return;
+    }
+    
+    int playerCount = [self readInt:task address:base + OFFSET_PLAYER_COUNT];
+    uint64_t entityList = [self readPointer:task address:base + OFFSET_ENTITY_LIST];
+    
+    [players removeAllObjects];
+    
+    for (int i = 0; i < playerCount; i++) {
+        uint64_t playerPtr = [self readPointer:task address:entityList + (i * 8)];
+        if (playerPtr == 0) continue;
+        
+        float x = [self readFloat:task address:playerPtr + OFFSET_POSITION_X];
+        float y = [self readFloat:task address:playerPtr + OFFSET_POSITION_Y];
+        float z = [self readFloat:task address:playerPtr + OFFSET_POSITION_Z];
+        float health = [self readFloat:task address:playerPtr + OFFSET_HEALTH];
+        int team = [self readInt:task address:playerPtr + OFFSET_TEAM];
+        
+        if (health <= 0) continue;
+        
+        NSDictionary *player = @{
+            @"x": @(x),
+            @"y": @(y),
+            @"z": @(z),
+            @"health": @(health),
+            @"team": @(team)
+        };
+        [players addObject:player];
+    }
+    
+    mach_port_deallocate(mach_task_self(), task);
+}
+
+- (pid_t)getPid:(NSString *)processName {
+    NSArray *runningApps = [[NSWorkspace sharedWorkspace] runningApplications];
+    for (NSRunningApplication *app in runningApps) {
+        if ([app.localizedName isEqualToString:processName]) {
+            return app.processIdentifier;
+        }
+    }
+    return 0;
+}
+
+- (uint64_t)getBaseAddress:(task_t)task {
+    struct task_dyld_info dyld_info;
+    mach_msg_type_number_t count = TASK_DYLD_INFO_COUNT;
+    
+    if (task_info(task, TASK_DYLD_INFO, (task_info_t)&dyld_info, &count) == KERN_SUCCESS) {
+        struct dyld_all_image_infos *infos = (struct dyld_all_image_infos *)dyld_info.all_image_info_addr;
+        uint64_t firstImage = [self readPointer:task address:(uint64_t)&infos->infoArray[0].imageLoadAddress];
+        return firstImage;
+    }
+    return 0;
+}
+
+- (uint64_t)readPointer:(task_t)task address:(uint64_t)address {
+    uint64_t value = 0;
+    vm_size_t size = sizeof(value);
+    vm_offset_t data;
+    kern_return_t ret = vm_read(task, address, size, &data, &size);
+    if (ret == KERN_SUCCESS) {
+        memcpy(&value, (void*)data, size);
+        vm_deallocate(mach_task_self(), data, size);
+    }
+    return value;
+}
+
+- (float)readFloat:(task_t)task address:(uint64_t)address {
+    float value = 0;
+    vm_size_t size = sizeof(value);
+    vm_offset_t data;
+    if (vm_read(task, address, size, &data, &size) == KERN_SUCCESS) {
+        memcpy(&value, (void*)data, size);
+        vm_deallocate(mach_task_self(), data, size);
+    }
+    return value;
+}
+
+- (int)readInt:(task_t)task address:(uint64_t)address {
+    int value = 0;
+    vm_size_t size = sizeof(value);
+    vm_offset_t data;
+    if (vm_read(task, address, size, &data, &size) == KERN_SUCCESS) {
+        memcpy(&value, (void*)data, size);
+        vm_deallocate(mach_task_self(), data, size);
+    }
+    return value;
+}
+
+@end
+
+// Хук для автоматической загрузки
+__attribute__((constructor))
+static void initialize() {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), 
+                   dispatch_get_main_queue(), ^{
+        [ESPRenderer sharedInstance];
+    });
+}
+EOF
+
+        cat > ESP/Info.plist << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleExecutable</key>
+    <string>ESP</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.esp.standoff2</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>ESP</string>
+    <key>CFBundlePackageType</key>
+    <string>DYLIB</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>MinimumOSVersion</key>
+    <string>12.0</string>
+</dict>
+</plist>
+EOF
+
+    - name: Compile dylib
+      run: |
+        xcodebuild -create-xcframework \
+          -library ESP/ESP.m \
+          -output ESP.xcframework
+        
+        clang -dynamiclib \
           -arch arm64 \
           -isysroot $(xcrun --sdk iphoneos --show-sdk-path) \
-          -miphoneos-version-min=12.0 \
           -framework Foundation \
           -framework UIKit \
           -framework CoreGraphics \
-          -o game_helper.dylib \
-          main.mm \
-          -fobjc-arc \
-          -O2
+          -o ESP.dylib \
+          ESP/ESP.m \
+          -current_version 1.0 \
+          -compatibility_version 1.0 \
+          -install_name @rpath/ESP.dylib
           
-    - name: Upload
-      uses: actions/upload-artifact@v4
+    - name: Sign dylib
+      run: |
+        # Создаем фейковый сертификат для подписи
+        security create-keychain -p temp temp.keychain
+        security default-keychain -s temp.keychain
+        security unlock-keychain -p temp temp.keychain
+        security find-identity -v
+        
+        # Подписываем dylib
+        ldid -S ESP.dylib
+        codesign -f -s - ESP.dylib
+          
+    - name: Create IPA injector
+      run: |
+        mkdir -p Payload
+        mkdir -p Payload/Standoff2.app/Frameworks
+        cp ESP.dylib Payload/Standoff2.app/Frameworks/
+        
+        # Создаем скрипт для внедрения
+        cat > inject.sh << 'EOF'
+#!/bin/bash
+# Скрипт для внедрения dylib в IPA
+# Использование: ./inject.sh original.ipa output.ipa
+
+IPA="$1"
+OUTPUT="$2"
+
+if [ -z "$IPA" ] || [ -z "$OUTPUT" ]; then
+    echo "Использование: ./inject.sh input.ipa output.ipa"
+    exit 1
+fi
+
+# Распаковываем IPA
+unzip -q "$IPA" -d ipa_extracted
+
+# Копируем dylib в приложение
+cp ESP.dylib ipa_extracted/Payload/*.app/Frameworks/
+
+# Внедряем загрузку dylib
+insert_dylib @rpath/ESP.dylib ipa_extracted/Payload/*.app/*.app/MachO --all-yes --inplace
+
+# Перепаковываем IPA
+cd ipa_extracted
+zip -qr "../$OUTPUT" Payload/
+cd ..
+
+# Очистка
+rm -rf ipa_extracted
+
+echo "Готово: $OUTPUT"
+EOF
+
+        chmod +x inject.sh
+          
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v3
       with:
-        name: game-helper-ios
-        path: game_helper.dylib
+        name: Standoff2-ESP
+        path: |
+          ESP.dylib
+          inject.sh
+          Payload/
+          
+    - name: Create release
+      if: startsWith(github.ref, 'refs/tags/')
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          ESP.dylib
+          inject.sh
+        generate_release_notes: true
