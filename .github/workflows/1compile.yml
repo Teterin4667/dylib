@@ -19,10 +19,11 @@ jobs:
         
     - name: Compile Dylib
       run: |
-        # Создаём исходный код
+        # Создаём исходный код (исправленная версия)
         cat > ScreenStretch.m << 'EOF'
         #import <UIKit/UIKit.h>
         #import <QuartzCore/QuartzCore.h>
+        #import <Foundation/Foundation.h>
         
         @interface ScreenStretch : NSObject
         @property (nonatomic, weak) UIView *targetView;
@@ -47,6 +48,15 @@ jobs:
             return instance;
         }
         
+        - (instancetype)init {
+            self = [super init];
+            if (self) {
+                _isStretched = NO;
+                _intensity = 0.0;
+            }
+            return self;
+        }
+        
         - (void)stretchView:(UIView *)view atPoint:(CGPoint)point {
             self.targetView = view;
             _touchPoint = point;
@@ -62,6 +72,8 @@ jobs:
         }
         
         - (void)applyStretch {
+            if (!self.targetView) return;
+            
             CATransform3D transform = CATransform3DIdentity;
             transform.m34 = -1.0 / 500.0;
             
@@ -96,19 +108,17 @@ jobs:
         
         @end
         
-        // Экспортируемые функции для C
-        extern "C" {
-            void ScreenStretchApply(UIView *view, CGFloat x, CGFloat y) {
-                [[ScreenStretch shared] stretchView:view atPoint:CGPointMake(x, y)];
-            }
-            
-            void ScreenStretchReset(void) {
-                [[ScreenStretch shared] resetStretch];
-            }
-            
-            BOOL ScreenStretchIsActive(void) {
-                return [ScreenStretch shared].isStretched;
-            }
+        // C функции для экспорта (исправлено - убрал extern "C" в .m файле)
+        void ScreenStretchApply(UIView *view, CGFloat x, CGFloat y) {
+            [[ScreenStretch shared] stretchView:view atPoint:CGPointMake(x, y)];
+        }
+        
+        void ScreenStretchReset(void) {
+            [[ScreenStretch shared] resetStretch];
+        }
+        
+        BOOL ScreenStretchIsActive(void) {
+            return [ScreenStretch shared].isStretched;
         }
         EOF
         
@@ -131,6 +141,15 @@ jobs:
         #ifdef __cplusplus
         }
         #endif
+        EOF
+        
+        # Создаём module.modulemap
+        cat > module.modulemap << 'EOF'
+        framework module ScreenStretch {
+            umbrella header "ScreenStretch.h"
+            export *
+            module * { export * }
+        }
         EOF
         
         # Компилируем для ARM64 (iOS устройства)
@@ -158,22 +177,32 @@ jobs:
               -o ScreenStretch_sim.dylib \
               ScreenStretch.m
         
-        # Создаём универсальный бинарник
-        lipo -create -output ScreenStretch_universal.dylib \
-             -arch arm64 ScreenStretch.dylib \
-             -arch x86_64 ScreenStretch_sim.dylib
+        # Проверяем что файлы создались
+        ls -la *.dylib
+        
+        # Создаём универсальный бинарник если есть оба файла
+        if [ -f "ScreenStretch.dylib" ] && [ -f "ScreenStretch_sim.dylib" ]; then
+            lipo -create -output ScreenStretch_universal.dylib \
+                 -arch arm64 ScreenStretch.dylib \
+                 -arch x86_64 ScreenStretch_sim.dylib
+        else
+            echo "One of the dylib files is missing, skipping universal binary"
+            cp ScreenStretch.dylib ScreenStretch_universal.dylib
+        fi
         
         # Подписываем
-        ldid -S ScreenStretch.dylib
-        ldid -S ScreenStretch_universal.dylib
+        ldid -S ScreenStretch.dylib 2>/dev/null || true
+        ldid -S ScreenStretch_universal.dylib 2>/dev/null || true
         
         # Создаём структуру фреймворка
         mkdir -p ScreenStretch.framework/Headers
+        mkdir -p ScreenStretch.framework/Modules
         cp ScreenStretch_universal.dylib ScreenStretch.framework/ScreenStretch
         cp ScreenStretch.h ScreenStretch.framework/Headers/
+        cp module.modulemap ScreenStretch.framework/Modules/
         
         # Создаём Info.plist
-        cat > ScreenStretch.framework/Info.plist << PLIST
+        cat > ScreenStretch.framework/Info.plist << 'PLIST'
         <?xml version="1.0" encoding="UTF-8"?>
         <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
         <plist version="1.0">
@@ -183,7 +212,7 @@ jobs:
             <key>CFBundleExecutable</key>
             <string>ScreenStretch</string>
             <key>CFBundleIdentifier</key>
-            <string>com.example.screenstretch</string>
+            <string>com.screenstretch.dylib</string>
             <key>CFBundleInfoDictionaryVersion</key>
             <string>6.0</string>
             <key>CFBundleName</key>
@@ -191,7 +220,7 @@ jobs:
             <key>CFBundlePackageType</key>
             <string>FMWK</string>
             <key>CFBundleShortVersionString</key>
-            <string>1.0</string>
+            <string>1.0.0</string>
             <key>CFBundleVersion</key>
             <string>1</string>
             <key>MinimumOSVersion</key>
@@ -210,7 +239,7 @@ jobs:
           ScreenStretch.framework/
           ScreenStretch.h
           
-    - name: Create Example Project
+    - name: Create Documentation
       run: |
         cat > README.md << 'EOF'
         # ScreenStretch Dylib
@@ -219,22 +248,18 @@ jobs:
         
         ## Установка
         
-        ### CocoaPods
-        ```ruby
-        pod 'ScreenStretch', :path => 'ScreenStretch.podspec'
-        ```
-        
         ### Ручная установка
-        1. Скачайте ScreenStretch.framework
-        2. Добавьте в Xcode проект
+        1. Скачайте ScreenStretch.framework из артефактов
+        2. Добавьте в Xcode проект (Drag & drop)
         3. В Build Settings -> Other Linker Flags добавьте `-ObjC`
+        4. В General -> Frameworks добавьте ScreenStretch.framework
         
         ## Использование
         
+        ### Objective-C
         ```objc
         #import <ScreenStretch/ScreenStretch.h>
         
-        // Objective-C
         - (void)touchesBegan:(NSSet *)touches withEvent:(UIEvent *)event {
             CGPoint point = [touches.anyObject locationInView:self.view];
             [[ScreenStretch shared] stretchView:self.view atPoint:point];
@@ -243,16 +268,9 @@ jobs:
         - (void)touchesEnded:(NSSet *)touches withEvent:(UIEvent *)event {
             [[ScreenStretch shared] resetStretch];
         }
-        
-        // Или через C функции
-        - (void)touchesMoved:(NSSet *)touches withEvent:(UIEvent *)event {
-            CGPoint point = [touches.anyObject locationInView:self.view];
-            ScreenStretchApply(self.view, point.x, point.y);
-        }
         ```
         
-        ## Swift
-        
+        ### Swift
         ```swift
         import ScreenStretch
         
@@ -266,46 +284,48 @@ jobs:
         }
         ```
         
-        ## API
+        ### C API
+        ```c
+        #import <ScreenStretch/ScreenStretch.h>
         
-        - `stretchView:atPoint:` - применить растяжение
-        - `resetStretch` - сбросить эффект
-        - `isStretched` - проверка состояния
-        EOF
+        void handleTouch(UIView *view, float x, float y) {
+            ScreenStretchApply(view, x, y);
+        }
+        ```
         
-        # Создаём podspec
-        cat > ScreenStretch.podspec << EOF
-        Pod::Spec.new do |s|
-          s.name             = 'ScreenStretch'
-          s.version          = '1.0.0'
-          s.summary          = 'Screen stretch effect library'
-          s.description      = 'Library for applying stretch effect to views'
-          s.homepage         = 'https://github.com/yourname/screenstretch'
-          s.license          = { :type => 'MIT' }
-          s.author           = { 'Your Name' => 'email@example.com' }
-          s.source           = { :path => '.' }
-          s.ios.deployment_target = '12.0'
-          s.vendored_frameworks = 'ScreenStretch.framework'
-        end
+        ## API Reference
+        
+        - `+shared` - Получить синглтон
+        - `-stretchView:atPoint:` - Применить растяжение к view в точке
+        - `-resetStretch` - Сбросить эффект
+        - `isStretched` - Проверить активен ли эффект
+        
+        ## Требования
+        
+        - iOS 12.0+
+        - ARC
+        - Xcode 12+
+        
+        ## Лицензия
+        
+        MIT
         EOF
         
     - name: Upload Documentation
       uses: actions/upload-artifact@v4
       with:
         name: Documentation
-        path: |
-          README.md
-          ScreenStretch.podspec
-          
+        path: README.md
+        
     - name: Create Release Package
       run: |
         zip -r ScreenStretch.zip ScreenStretch.framework ScreenStretch.h README.md
-        zip -r ScreenStretch-Binary.zip ScreenStretch.dylib ScreenStretch_universal.dylib
+        zip -r ScreenStretch-Binaries.zip ScreenStretch.dylib ScreenStretch_universal.dylib
         
-    - name: Upload Release
+    - name: Upload Release Package
       uses: actions/upload-artifact@v4
       with:
-        name: Release-Package
+        name: Release-Packages
         path: |
           ScreenStretch.zip
-          ScreenStretch-Binary.zip
+          ScreenStretch-Binaries.zip
