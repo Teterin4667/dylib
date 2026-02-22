@@ -38,25 +38,75 @@ jobs:
       
       - name: Установка iOS SDK и инструментов
         run: |
-          # Устанавливаем iOS toolchain
-          xcode-select --install || true
-          
-          # Устанавливаем iOS cross-compilation tools
+          # Устанавливаем базовые инструменты через brew
+          brew update
           brew install \
+            ldid \
             ios-deploy \
             ideviceinstaller \
             libimobiledevice \
-            ldid \
-            jq
+            jq || true
           
-          # Скачиваем необходимые заголовки iOS
-          git clone https://github.com/nst/iOS-Runtime-Headers.git
+          # Скачиваем insert_dylib из исходников (так как нет в brew)
+          cd /tmp
+          git clone https://github.com/Tyilo/insert_dylib
+          cd insert_dylib
+          xcodebuild
+          cp build/Release/insert_dylib /usr/local/bin/
+          chmod +x /usr/local/bin/insert_dylib
+          
+          # Скачиваем и устанавливаем Azule для внедрения dylib в IPA
+          cd /tmp
+          git clone https://github.com/Al4ise/Azule
+          cd Azule
+          chmod +x azule
+          cp azule /usr/local/bin/
+          
+          # Скачиваем заголовки iOS Runtime
+          git clone https://github.com/nst/iOS-Runtime-Headers.git ~/iOS-Headers
+          
+          # Проверяем установку
+          echo "✅ Проверка инструментов:"
+          which ldid && echo "ldid OK"
+          which insert_dylib && echo "insert_dylib OK" || echo "insert_dylib не найден"
+          which azule && echo "azule OK" || echo "azule не найден"
           
           echo "🛠 Инструменты установлены"
+      
+      - name: Установка Theos (опционально, для расширенной сборки)
+        run: |
+          # Устанавливаем Theos для более продвинутой сборки
+          export THEOS=/opt/theos
+          sudo mkdir -p $THEOS
+          sudo chown $(whoami) $THEOS
+          git clone --recursive https://github.com/theos/theos.git $THEOS
+          
+          # Устанавливаем заголовоки
+          cd $THEOS
+          ./bin/update-theos
+          
+          # Устанавливаем SDK
+          curl -LO https://github.com/xybp888/iOS-SDKs/releases/download/iPhoneOS14.5.sdk/iPhoneOS14.5.sdk.tar.xz
+          tar -xvf iPhoneOS14.5.sdk.tar.xz -C $THEOS/sdks/
+          
+          echo "✅ Theos установлен в $THEOS"
       
       - name: Создание dylib с растягом
         run: |
           mkdir -p stretchlib
+          
+          # Создаем Makefile для Theos
+          cat > stretchlib/Makefile << 'EOF'
+          export THEOS = /opt/theos
+          include $(THEOS)/makefiles/common.mk
+          
+          TWEAK_NAME = ScreenStretch
+          ScreenStretch_FILES = stretch.m
+          ScreenStretch_CFLAGS = -fobjc-arc
+          ScreenStretch_FRAMEWORKS = UIKit Foundation Metal
+          
+          include $(THEOS_MAKE_PATH)/tweak.mk
+          EOF
           
           # Создаем основной код dylib
           cat > stretchlib/stretch.m << 'EOF'
@@ -69,18 +119,6 @@ jobs:
           #define STRETCH_VALUE ${{ github.event.inputs.stretch_value }}
           #define GAME_BUNDLE @"${{ github.event.inputs.game_bundle }}"
           
-          // Хуки для Metal (современные игры)
-          @interface MTLRenderPassDescriptor : NSObject
-          - (void)setRenderTargetWidth:(NSUInteger)width;
-          - (void)setRenderTargetHeight:(NSUInteger)height;
-          @end
-          
-          // Хуки для OpenGL (старые игры)
-          @interface EAGLContext : NSObject
-          - (void)renderbufferStorage:(NSUInteger)target fromDrawable:(id)drawable;
-          @end
-          
-          // Основной класс растяга
           @interface ScreenStretch : NSObject
           + (void)load;
           + (void)applyStretch;
@@ -89,181 +127,128 @@ jobs:
           @implementation ScreenStretch
           
           + (void)load {
-              // Проверяем что мы в нужной игре
               NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
               if ([bundleID isEqualToString:GAME_BUNDLE]) {
-                  NSLog(@"🎮 Растяг активирован для %@", bundleID);
-                  [self applyStretch];
+                  NSLog(@"🎮 Растяг активирован для %@ (значение: %d)", bundleID, STRETCH_VALUE);
                   
-                  // Отключаем защиту от чит-движка
-                  [[NSUserDefaults standardUserDefaults] setBool:NO forKey:@"antiCheatEnabled"];
+                  // Запускаем с задержкой, чтобы игра успела загрузиться
+                  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)), 
+                               dispatch_get_main_queue(), ^{
+                      [self applyStretch];
+                  });
               }
           }
           
           + (void)applyStretch {
-              // Метод 1: Растяг через FOV (камера)
-              if (STRETCH_METHOD == 1) { // fov
-                  // Ищем камеру игры и меняем FOV
-                  Class cameraClass = NSClassFromString(@"GameCamera");
-                  if (cameraClass) {
-                      SEL fovSelector = NSSelectorFromString(@"setFieldOfView:");
-                      if ([cameraClass respondsToSelector:fovSelector]) {
-                          // Увеличиваем FOV для эффекта растяга
-                          [cameraClass performSelector:fovSelector withObject:@(STRETCH_VALUE)];
-                      }
-                  }
-              }
-              
-              // Метод 2: Изменение соотношения сторон
-              else if (STRETCH_METHOD == 2) { // aspect
-                  UIScreen *mainScreen = [UIScreen mainScreen];
-                  CGRect bounds = mainScreen.bounds;
-                  
-                  // Растягиваем соотношение сторон
-                  CGFloat newWidth = bounds.size.width * (STRETCH_VALUE / 100.0);
-                  CGFloat newHeight = bounds.size.height;
-                  
-                  // Форсим новое разрешение
-                  NSValue *newBounds = [NSValue valueWithCGRect:CGRectMake(0, 0, newWidth, newHeight)];
-                  [[NSNotificationCenter defaultCenter] postNotificationName:UIScreenModeDidChangeNotification 
-                                                                    object:mainScreen 
-                                                                  userInfo:@{@"bounds": newBounds}];
-              }
-              
-              // Метод 3: Metal хак (для современных игр)
-              else if (STRETCH_METHOD == 3) { // metal_hack
-                  // Подменяем Metal view
-                  Class metalViewClass = NSClassFromString(@"MTKView");
-                  if (metalViewClass) {
-                      Method originalMethod = class_getInstanceMethod(metalViewClass, @selector(draw));
-                      Method swizzledMethod = class_getInstanceMethod(metalViewClass, @selector(stretched_draw));
-                      method_exchangeImplementations(originalMethod, swizzledMethod);
-                  }
-              }
-              
-              // Применяем растяг ко всем UI элементам
-              [self stretchAllViews];
-          }
-          
-          + (void)stretchAllViews {
               UIWindow *keyWindow = [UIApplication sharedApplication].keyWindow;
-              if (keyWindow) {
-                  // Растягиваем корневое view
-                  keyWindow.rootViewController.view.transform = CGAffineTransformMakeScale(
-                      STRETCH_VALUE / 100.0, 
-                      STRETCH_VALUE / 100.0
-                  );
+              if (!keyWindow) return;
+              
+              // Применяем растяг в зависимости от метода
+              float stretchFactor = STRETCH_VALUE / 100.0;
+              
+              // Ищем игровую камеру
+              UIView *gameView = [self findGameView:keyWindow];
+              
+              if (gameView) {
+                  // Растягиваем игровой view
+                  gameView.transform = CGAffineTransformMakeScale(stretchFactor, stretchFactor);
+                  gameView.frame = keyWindow.bounds;
                   
-                  // Добавляем оверлей для индикации растяга
-                  UILabel *stretchLabel = [[UILabel alloc] initWithFrame:CGRectMake(20, 50, 200, 30)];
-                  stretchLabel.text = [NSString stringWithFormat:@"🔴 РАСТЯГ %d%%", STRETCH_VALUE];
-                  stretchLabel.textColor = [UIColor redColor];
-                  stretchLabel.font = [UIFont boldSystemFontOfSize:16];
-                  stretchLabel.backgroundColor = [UIColor blackColor];
-                  stretchLabel.alpha = 0.7;
-                  stretchLabel.layer.cornerRadius = 10;
-                  stretchLabel.clipsToBounds = YES;
-                  stretchLabel.textAlignment = NSTextAlignmentCenter;
+                  // Показываем индикатор
+                  [self showStretchIndicator:keyWindow];
                   
-                  [keyWindow addSubview:stretchLabel];
+                  NSLog(@"✅ Растяг применен к игровому view: %@", gameView);
+              } else {
+                  NSLog(@"⚠️ Игровой view не найден, пробуем альтернативный метод");
+                  [self alternativeStretch:keyWindow];
               }
           }
           
-          @end
-          
-          // Metal swizzling
-          @implementation MTKView (Stretch)
-          
-          - (void)stretched_draw {
-              // Меняем вьюпорт перед рендером
-              CGSize stretchSize = self.drawableSize;
-              stretchSize.width *= (STRETCH_VALUE / 100.0);
-              self.drawableSize = stretchSize;
+          + (UIView *)findGameView:(UIView *)view {
+              // Рекурсивно ищем игровой view по характерным признакам
+              if ([view isKindOfClass:NSClassFromString(@"GLKView")] ||
+                  [view isKindOfClass:NSClassFromString(@"MTKView")] ||
+                  [view isKindOfClass:NSClassFromString(@"EAGLView")]) {
+                  return view;
+              }
               
-              // Вызываем оригинальный draw
-              [self stretched_draw];
+              for (UIView *subview in view.subviews) {
+                  UIView *found = [self findGameView:subview];
+                  if (found) return found;
+              }
+              
+              return nil;
+          }
+          
+          + (void)alternativeStretch:(UIWindow *)window {
+              // Альтернативный метод - растягиваем все
+              [UIView animateWithDuration:0.5 animations:^{
+                  window.rootViewController.view.transform = CGAffineTransformMakeScale(1.2, 1.2);
+              }];
+          }
+          
+          + (void)showStretchIndicator:(UIWindow *)window {
+              UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(20, 50, 200, 40)];
+              label.text = [NSString stringWithFormat:@"🔴 РАСТЯГ %d%%", STRETCH_VALUE];
+              label.textColor = [UIColor redColor];
+              label.backgroundColor = [UIColor blackColor];
+              label.alpha = 0.7;
+              label.layer.cornerRadius = 10;
+              label.clipsToBounds = YES;
+              label.textAlignment = NSTextAlignmentCenter;
+              label.font = [UIFont boldSystemFontOfSize:14];
+              label.tag = 9999;
+              
+              [window addSubview:label];
+              
+              // Убираем через 5 секунд
+              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)), 
+                           dispatch_get_main_queue(), ^{
+                  [label removeFromSuperview];
+              });
           }
           
           @end
           
           // Точка входа
           __attribute__((constructor)) static void init() {
-              NSLog(@"📱 dylib с растягом загружен");
-              [ScreenStretch load];
+              NSLog(@"📱 dylib с растягом загружен (метод: %d, значение: %d)", 
+                    STRETCH_METHOD, STRETCH_VALUE);
           }
           EOF
           
-          # Создаем заголовочный файл
-          cat > stretchlib/stretch.h << EOF
-          #ifndef STRETCH_H
-          #define STRETCH_H
-          
-          void apply_screen_stretch(float value);
-          
-          #endif
+          # Создаем контрольный файл
+          cat > stretchlib/control << EOF
+          Package: com.stretch.game
+          Name: Game Screen Stretch
+          Version: 1.0-${{ github.run_number }}
+          Architecture: iphoneos-arm
+          Description: Растяг экрана для игр
+          Maintainer: GitHub Actions
+          Author: GitHub Actions
+          Section: Tweaks
+          Depends: mobilesubstrate (>= 0.9.5000)
           EOF
       
-      - name: Компиляция dylib для iOS
+      - name: Компиляция через Theos
         run: |
-          # Настройки компиляции
-          IOS_VERSION="${{ github.event.inputs.ios_version }}"
-          ARCH="${{ github.event.inputs.arch || 'arm64' }}"
+          cd stretchlib
+          export THEOS=/opt/theos
           
-          # Пути к iOS SDK
-          IOS_SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          # Компилируем твик
+          make
           
-          # Компилируем для ARM64 (iOS устройства)
-          clang -arch arm64 \
-                -isysroot $IOS_SDK \
-                -mios-version-min=$IOS_VERSION \
-                -fobjc-arc \
-                -framework Foundation \
-                -framework UIKit \
-                -framework Metal \
-                -dynamiclib \
-                -install_name @executable_path/Frameworks/stretch.dylib \
-                stretchlib/stretch.m \
-                -o stretch.dylib
+          # Создаем deb пакет
+          make package
           
-          # Подписываем dylib (обязательно для iOS)
-          ldid -S stretch.dylib
+          # Копируем результаты
+          cp .theos/obj/debug/ScreenStretch.dylib ../stretch.dylib
+          cp packages/*.deb ../stretch-game.deb || true
           
-          # Создаем универсальную библиотеку если нужно
-          if [[ "${{ github.event.inputs.arch }}" == "all" ]]; then
-            # Компилируем для симулятора (x86_64)
-            SIM_SDK=$(xcrun --sdk iphonesimulator --show-sdk-path)
-            clang -arch x86_64 \
-                  -isysroot $SIM_SDK \
-                  -mios-version-min=$IOS_VERSION \
-                  -fobjc-arc \
-                  -framework Foundation \
-                  -framework UIKit \
-                  -framework Metal \
-                  -dynamiclib \
-                  stretchlib/stretch.m \
-                  -o stretch_x86.dylib
-            
-            # Объединяем в fat binary
-            lipo -create stretch.dylib stretch_x86.dylib -output stretch_universal.dylib
-            mv stretch_universal.dylib stretch.dylib
-          fi
-          
-          # Информация о библиотеке
-          echo "✅ dylib скомпилирован:"
-          file stretch.dylib
-          lipo -info stretch.dylib || true
-      
-      - name: Создание deb пакета (для установки через Filza)
-        run: |
-          mkdir -p package/DEBIAN
-          mkdir -p package/usr/lib
-          mkdir -p package/Library/MobileSubstrate/DynamicLibraries
-          
-          # Копируем dylib
-          cp stretch.dylib package/usr/lib/
+          cd ..
           
           # Создаем plist для MobileSubstrate
-          cat > package/Library/MobileSubstrate/DynamicLibraries/stretch.plist << EOF
+          cat > stretch.plist << EOF
           {
             Filter = {
               Bundles = (
@@ -273,119 +258,136 @@ jobs:
           }
           EOF
           
-          # Создаем control файл для deb
-          cat > package/DEBIAN/control << EOF
-          Package: com.stretch.gamer
-          Name: Game Screen Stretch
-          Version: 1.0-${{ github.run_number }}
-          Architecture: iphoneos-arm
-          Description: Растяг экрана для игр без джейлбрейка
-          Author: GitHub Actions
-          Maintainer: GitHub Actions
-          Section: Tweaks
-          Depends: mobilesubstrate (>= 0.9.5000)
-          EOF
+          # Подписываем dylib
+          ldid -S stretch.dylib
           
-          # Создаем пост-инсталл скрипт
-          cat > package/DEBIAN/postinst << 'EOF'
-          #!/bin/bash
-          echo "📱 Растяг установлен! Перезапустите игру"
-          killall -9 SpringBoard || true
-          EOF
-          chmod 755 package/DEBIAN/postinst
-          
-          # Собираем deb
-          dpkg-deb -b package stretch-game.deb
+          echo "✅ Компиляция завершена"
+          file stretch.dylib
       
-      - name: Создание IPA с внедренным dylib (без джейлбрейка)
+      - name: Создание примера IPA с внедренным dylib (опционально)
         run: |
-          mkdir -p injected_payload/Payload
+          mkdir -p injected
           
-          # Скачиваем пример IPA или используем загруженный
-          # В реальности тут нужно скачать IPA игры
+          # Создаем демо-IPA для примера
+          cat > injected/README.txt << EOF
+          🔧 ИНСТРУКЦИЯ ПО ВНЕДРЕНИЮ DYLIB В ИГРУ:
           
-          # Создаем структуру для внедрения
-          mkdir -p injected_payload/Payload/Game.app/Frameworks
+          1. СКАЧАЙТЕ НУЖНЫЕ ИНСТРУМЕНТЫ:
+          --------------------------------
+          - Azule: https://github.com/Al4ise/Azule
+          - insert_dylib: https://github.com/Tyilo/insert_dylib
           
-          # Копируем dylib в Framework
-          cp stretch.dylib injected_payload/Payload/Game.app/Frameworks/
+          2. СПОСОБ 1 - ЧЕРЕЗ AZULE (ПРОСТОЙ):
+          --------------------------------
+          azule -i Game.ipa -o Patched.ipa -f stretch.dylib
           
-          # Создаем скрипт для внедрения через insert_dylib
-          curl -LO https://github.com/Tyilo/insert_dylib/releases/download/1.0.0/insert_dylib
-          chmod +x insert_dylib
+          3. СПОСОБ 2 - ЧЕРЕЗ INSERT_DYLIB (РУЧНОЙ):
+          --------------------------------
+          # Распаковать IPA
+          unzip Game.ipa -d Payload/
           
-          # В реальности тут нужно модифицировать Mach-O бинарник игры
-          # ./insert_dylib @executable_path/Frameworks/stretch.dylib Game Binary_stretched
+          # Внедрить dylib в бинарник
+          insert_dylib @executable_path/stretch.dylib Payload/Game.app/Game Payload/Game.app/Game_patched
           
-          # Создаем README с инструкцией
-          cat > README_INJECT.txt << EOF
-          🔧 ИНСТРУКЦИЯ ПО ВНЕДРЕНИЮ БЕЗ ДЖЕЙЛБРЕЙКА:
+          # Заменить оригинал
+          mv Payload/Game.app/Game_patched Payload/Game.app/Game
           
-          1. Способ 1 (с джейлбрейком):
-             - Установи .deb через Filza
-             - Перезагрузи устройство
+          # Скопировать dylib
+          cp stretch.dylib Payload/Game.app/
           
-          2. Способ 2 (без джейлбрейка):
-             - Установи TrollStore
-             - Подпиши dylib через TrollStore
-             - Внедри в IPA через Azule или самостоятельно
+          # Подписать
+          codesign -f -s - Payload/Game.app
           
-          3. Способ 3 (AltStore):
-             - Перепакуй IPA с внедренным dylib
-             - Подпиши своей подписью
-             - Установи через AltStore
+          # Запаковать обратно
+          zip -r Patched.ipa Payload/
           
-          Файлы:
-          - stretch.dylib - основная библиотека
-          - stretch-game.deb - пакет для джейлбрейка
-          - stretch.plist - конфиг для MobileSubstrate
+          4. УСТАНОВКА:
+          --------------------------------
+          - С джейлбрейком: установи .deb через Filza/Sileo
+          - Без джейлбрейка: установи Patched.ipa через AltStore/Sideloadly
           
-          Параметры растяга:
-          - Метод: ${{ github.event.inputs.stretch_method }}
-          - Значение: ${{ github.event.inputs.stretch_value }}
-          - Игра: ${{ github.event.inputs.game_bundle }}
+          ⚠️ ТОЛЬКО ДЛЯ ТЕСТИРОВАНИЯ НА СВОИХ УСТРОЙСТВАХ!
+          EOF
+          
+          # Создаем информационный файл
+          cat > injected/info.json << EOF
+          {
+            "stretch_method": "${{ github.event.inputs.stretch_method }}",
+            "stretch_value": ${{ github.event.inputs.stretch_value }},
+            "game_bundle": "${{ github.event.inputs.game_bundle }}",
+            "ios_version": "${{ github.event.inputs.ios_version }}",
+            "build_date": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+            "files": [
+              "stretch.dylib",
+              "stretch.plist",
+              "stretch-game.deb"
+            ]
+          }
           EOF
       
       - name: Создание релиза
         uses: softprops/action-gh-release@v1
         with:
           tag_name: stretch-v${{ github.run_number }}
-          name: 📱 Растяг экрана для игр v${{ github.run_number }}
+          name: 📱 Game Screen Stretch v${{ github.run_number }}
           body: |
-            ## 🎮 Растяг экрана для игр
+            ## 🎮 Растяг экрана для игр v${{ github.run_number }}
             
-            **Параметры:**
-            - Метод: ${{ github.event.inputs.stretch_method }}
-            - Значение: ${{ github.event.inputs.stretch_value }}
-            - Игра: ${{ github.event.inputs.game_bundle }}
-            - iOS: ${{ github.event.inputs.ios_version }}
+            **Параметры сборки:**
+            - 📐 Метод растяга: `${{ github.event.inputs.stretch_method }}`
+            - 💪 Значение: `${{ github.event.inputs.stretch_value }}%`
+            - 🎯 Bundle ID: `${{ github.event.inputs.game_bundle }}`
+            - 📱 iOS версия: `${{ github.event.inputs.ios_version }}`
             
-            **Файлы:**
-            - `stretch.dylib` - библиотека растяга
+            **📦 Файлы:**
+            - `stretch.dylib` - динамическая библиотека
+            - `stretch.plist` - конфиг для MobileSubstrate
             - `stretch-game.deb` - пакет для джейлбрейка
-            - `stretch.plist` - конфигурация
             
-            **Установка:**
-            1. **С джейлбрейком:** Установи .deb через Filza/Sileo
-            2. **Без джейлбрейка:** Используй TrollStore для подписи dylib
-            3. **Внедрение в IPA:** Используй Azule или insert_dylib
+            **📥 Установка:**
             
-            ⚠️ Только для образовательных целей!
+            🔹 **С джейлбрейком:**
+            ```
+            1. Скачай stretch-game.deb
+            2. Установи через Filza или Sileo
+            3. Перезагрузи устройство
+            ```
+            
+            🔹 **Без джейлбрейка (TrollStore):**
+            ```
+            1. Скачай stretch.dylib
+            2. Открой в TrollStore
+            3. Установи
+            ```
+            
+            🔹 **Без джейлбрейка (AltStore/Sideloadly):**
+            ```
+            1. Скачай оригинальный IPA игры
+            2. Используй azule для внедрения dylib
+            3. Подпиши своей подписью
+            4. Установи через AltStore
+            ```
+            
+            **⚠️ Важно:**
+            - Только для образовательных целей
+            - Используй на свой страх и риск
+            - Может быть обнаружено античитами
           files: |
             stretch.dylib
+            stretch.plist
             stretch-game.deb
-            package/Library/MobileSubstrate/DynamicLibraries/stretch.plist
-            README_INJECT.txt
+            injected/README.txt
+            injected/info.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       
       - name: Загрузка артефактов
         uses: actions/upload-artifact@v4
         with:
-          name: stretch-dylib-${{ github.run_number }}
+          name: game-stretch-${{ github.run_number }}
           path: |
             stretch.dylib
+            stretch.plist
             stretch-game.deb
-            package/Library/MobileSubstrate/DynamicLibraries/stretch.plist
-            README_INJECT.txt
+            injected/
           retention-days: 30
